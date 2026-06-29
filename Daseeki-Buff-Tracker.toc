@@ -1,0 +1,14 @@
+## Interface: 11507, 11508
+## Title: Daseeki Buff Tracker
+## Notes: Customizable buff and consumable tracker with class profiles
+## Author: Daseeki
+## SavedVariables: DaseekiCTDB
+## OptionalDeps: Daseeki-Core
+## Version: 2.0.0
+
+buffs.lua
+main.lua
+defaults.lua
+profiles.lua
+frame.lua
+options.lua
