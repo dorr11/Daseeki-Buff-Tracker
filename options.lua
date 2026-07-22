@@ -429,14 +429,27 @@ function Addon:BuildOptions(panel)
         function(result)
             if result.weaponSlot then
                 ed._weaponSlot = result.weaponSlot
+                ed._spellID    = nil
                 ed._buffNames  = {}
                 ed.ebBuff:SetText("[" .. result.weaponSlot .. " enchant]")
                 ed.ebBuff:SetEnabled(false)
                 ed.ebAltBuff:SetEnabled(false)
                 ed.weaponSlotLabel:SetText("Weapon: " .. result.weaponSlot)
                 ed.weaponSlotLabel:Show()
+            elseif result.bySpell then
+                -- Spell-ID-identified buff (e.g. Mageblood vs Nightfin): lock the
+                -- field to the label; matching is by spell ID, not the typed name.
+                ed._weaponSlot    = nil
+                ed._spellID       = result.spellID
+                ed._displayLabel  = result.label
+                ed._buffNames     = { result.buffName }
+                ed.ebBuff:SetText(result.label)
+                ed.ebBuff:SetEnabled(false)
+                ed.ebAltBuff:SetEnabled(false)
+                ed.weaponSlotLabel:Hide()
             else
                 ed._weaponSlot = nil
+                ed._spellID    = nil
                 ed._buffNames[1] = result.buffName
                 ed.ebBuff:SetEnabled(true)
                 ed.ebAltBuff:SetEnabled(true)
@@ -635,7 +648,7 @@ function Addon:BuildOptions(panel)
     ed.weaponSlotLabel:Hide()
 
     MakeButton(ed.factionRow, "Cancel", 320, 0, 72, 22, function()
-        panel.selectedItemIndex = nil; ed._weaponSlot = nil
+        panel.selectedItemIndex = nil; ed._weaponSlot = nil; ed._spellID = nil
         ed:Hide(); placeholder:Show()
         for _, r in ipairs(panel.itemRows) do if r:IsShown() then r.selTex:Hide() end end
     end)
@@ -663,9 +676,14 @@ function Addon:BuildOptions(panel)
         local idx = panel.selectedItemIndex
         if not profileName or not idx then return end
 
-        local primaryText = strtrim(ed.ebBuff:GetText())
-        if primaryText == "" or primaryText:sub(1, 1) == "[" then primaryText = nil end
-        ed._buffNames[1] = primaryText
+        -- The buff field is free-text only for name-matched entries. Weapon-enchant
+        -- and spell-ID entries have a locked, label-showing field, so don't derive
+        -- the primary aura name from the box text for them.
+        if not ed._weaponSlot and not ed._spellID then
+            local primaryText = strtrim(ed.ebBuff:GetText())
+            if primaryText == "" or primaryText:sub(1, 1) == "[" then primaryText = nil end
+            ed._buffNames[1] = primaryText
+        end
 
         local buffNames = {}
         for _, n in ipairs(ed._buffNames) do
@@ -676,6 +694,8 @@ function Addon:BuildOptions(panel)
         local displayName
         if ed._weaponSlot and ed._weaponSlot ~= "" then
             displayName = ed._weaponSlot == "mainhand" and "Mainhand Enchant" or "Offhand Enchant"
+        elseif ed._spellID then
+            displayName = ed._displayLabel or primaryBuff
         else
             displayName = primaryBuff
             if primaryBuff and Addon.BuffDB and Addon.BuffDB[primaryBuff] then
@@ -704,6 +724,7 @@ function Addon:BuildOptions(panel)
         local def = {
             buffNames   = buffNames,
             buffName    = nil,
+            spellID     = ed._spellID,
             displayName = displayName,
             clickable   = clickable,
             actionType  = actionType,
@@ -716,6 +737,14 @@ function Addon:BuildOptions(panel)
         }
 
         Addon:UpdateItemInProfile(profileName, idx, def)
+        -- UpdateItemInProfile merges keys (pairs skips nils), so explicitly reconcile
+        -- the identity fields that may need CLEARING when switching entry types.
+        local prof = Addon.db.profiles[profileName]
+        if prof and prof.items and prof.items[idx] then
+            prof.items[idx].spellID    = ed._spellID or nil
+            prof.items[idx].weaponSlot = ed._weaponSlot or nil
+        end
+
         Addon:RefreshItemList(panel)
         Addon:UpdateFrame()
     end
@@ -726,6 +755,8 @@ function Addon:BuildOptions(panel)
         placeholder:Hide(); ed:Show()
 
         ed._weaponSlot     = item.weaponSlot
+        ed._spellID        = item.spellID
+        ed._displayLabel   = item.displayName
         ed._selectedItemID = item.itemID or 0
         panel.selectedItemIndex = idx
 
@@ -738,6 +769,11 @@ function Addon:BuildOptions(panel)
             ed.ebBuff:SetEnabled(false)
             ed.ebAltBuff:SetEnabled(false)
             ed.weaponSlotLabel:SetText("Weapon: " .. item.weaponSlot)
+        elseif item.spellID then
+            ed.ebBuff:SetText(item.displayName or ed._buffNames[1] or "")
+            ed.ebBuff:SetEnabled(false)
+            ed.ebAltBuff:SetEnabled(false)
+            ed.weaponSlotLabel:Hide()
         else
             ed.ebBuff:SetText(ed._buffNames[1] or "")
             ed.ebBuff:SetEnabled(true)
@@ -897,6 +933,13 @@ function Addon:RefreshOptionsPanel()
     if Addon.BuffDB then
         for _, data in pairs(Addon.BuffDB) do
             if data.itemID then GetItemInfo(data.itemID) end
+        end
+    end
+    -- Same for spell-ID-identified source items (Mageblood, Nightfin) so their icons
+    -- render immediately instead of showing a question mark until GET_ITEM_INFO_RECEIVED.
+    if Addon.BuffSpellDB then
+        for _, e in ipairs(Addon.BuffSpellDB) do
+            if e.itemID then GetItemInfo(e.itemID) end
         end
     end
 end

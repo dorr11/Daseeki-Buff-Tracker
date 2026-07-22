@@ -1,6 +1,6 @@
 local _, Addon = ...
 
-local EXPORT_VERSION = "v3"
+local EXPORT_VERSION = "v4"
 
 function Addon:GetProfileNames()
     local names = {}
@@ -62,7 +62,9 @@ function Addon:RenameProfile(oldName, newName)
     return true
 end
 
--- v3 format: buffNames(|sep),displayName,clickable,actionType,itemID,macroName,faction,weaponSlot,enabled
+-- v4 format: buffNames(|sep),displayName,clickable,actionType,itemID,macroName,faction,weaponSlot,spellID,enabled
+-- v4 adds the spellID field (position 9) so spell-ID-identified entries (e.g. Mageblood
+-- vs Nightfin, which share the aura name "Mana Regeneration") survive export/import.
 function Addon:ExportProfile(name)
     local profile = Addon.db.profiles[name]
     if not profile then return nil, "Profile not found" end
@@ -74,7 +76,9 @@ function Addon:ExportProfile(name)
         local dispName   = (item.displayName or item.name or ""):gsub(",", "\xef\xbc\x8c")
         local macroName  = (item.macroName   or ""):gsub(",", "\xef\xbc\x8c")
         local faction    = (item.conditions and item.conditions.faction) or ""
+        -- Identity fields are mutually exclusive; only ever emit the one this entry carries.
         local weaponSlot = item.weaponSlot or ""
+        local spellID    = item.spellID or 0
         lines[#lines + 1] = table.concat({
             buffNamesStr,
             dispName,
@@ -84,6 +88,7 @@ function Addon:ExportProfile(name)
             macroName,
             faction,
             weaponSlot,
+            tostring(spellID),
             (item.enabled ~= false) and "1" or "0",
         }, ",")
     end
@@ -125,7 +130,31 @@ function Addon:ImportProfile(str)
     for i = 2, #lines do
         local line = lines[i]
         if line ~= "" then
-            if version == "v3" then
+            if version == "v4" then
+                -- buffNames(|sep),displayName,clickable,actionType,itemID,macroName,faction,weaponSlot,spellID,enabled
+                local p = SplitCSV(line, 10)
+                local buffNamesRaw = p[1] and p[1]:gsub("\xef\xbc\x8c", ",") or ""
+                local buffNames = {}
+                for n in (buffNamesRaw .. "|"):gmatch("([^|]*)|") do
+                    if n ~= "" then buffNames[#buffNames + 1] = n end
+                end
+                local dispName  = p[2] and p[2]:gsub("\xef\xbc\x8c", ",") or ""
+                local macroName = p[6] and p[6]:gsub("\xef\xbc\x8c", ",") or ""
+                local spellID   = tonumber(p[9])
+                if spellID == 0 then spellID = nil end
+                items[#items + 1] = {
+                    buffNames   = buffNames,
+                    displayName = dispName ~= "" and dispName or (buffNames[1] or ""),
+                    clickable   = p[3] == "1",
+                    actionType  = (p[4] ~= "" and p[4]) or "item",
+                    itemID      = tonumber(p[5]) or 0,
+                    macroName   = macroName ~= "" and macroName or nil,
+                    conditions  = { faction = (p[7] ~= "" and p[7]) or nil },
+                    weaponSlot  = (p[8] ~= "" and p[8]) or nil,
+                    spellID     = spellID,
+                    enabled     = p[10] ~= "0",
+                }
+            elseif version == "v3" then
                 -- buffNames(|sep),displayName,clickable,actionType,itemID,macroName,faction,weaponSlot,enabled
                 local p = SplitCSV(line, 9)
                 local buffNamesRaw = p[1] and p[1]:gsub("\xef\xbc\x8c", ",") or ""

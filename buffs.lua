@@ -10,7 +10,7 @@ Addon.BuffDB = {
     -- ----------------------------------------------------------------
     ["Flask of the Titans"]              = { label = "Flask of the Titans",              itemID = 13510 },
     ["Flask of Distilled Wisdom"]        = { label = "Flask of Distilled Wisdom",        itemID = 13511 },
-    ["Flask of Supreme Power"]           = { label = "Flask of Supreme Power",           itemID = 13512 },
+    ["Supreme Power"]                    = { label = "Flask of Supreme Power",           itemID = 13512, spellID = 17628 },
     ["Flask of Chromatic Resistance"]    = { label = "Flask of Chromatic Resistance",    itemID = 13513 },
 
     -- ----------------------------------------------------------------
@@ -27,6 +27,7 @@ Addon.BuffDB = {
     ["Elixir of Demonslaying"]           = { label = "Elixir of Demonslaying",           itemID = 11351 },
     ["Shadow Power"]                     = { label = "Elixir of Shadow Power",           itemID = 9264  },
     ["Fire Power"]                       = { label = "Elixir of Fire Power",             itemID = 6373  },
+    ["Greater Firepower"]                = { label = "Elixir of Greater Fire Power",     itemID = 21546, spellID = 26276 },
     ["Elixir of the Sages"]              = { label = "Elixir of the Sages",              itemID = 13447 },
 
     -- ----------------------------------------------------------------
@@ -36,7 +37,6 @@ Addon.BuffDB = {
     ["Greater Stoneshield"]              = { label = "Greater Stoneshield Potion",       itemID = 13455 },
     ["Elixir of Superior Defense"]       = { label = "Elixir of Superior Defense",       itemID = 13445 },
     ["Elixir of Greater Defense"]        = { label = "Elixir of Greater Defense",        itemID = 8951  },
-    ["Mageblood"]                        = { label = "Mageblood Potion",                 itemID = 20007 },
 
     -- ----------------------------------------------------------------
     -- Juju (Winterspring)
@@ -125,6 +125,7 @@ Addon.BuffDB = {
     ["Prayer of Fortitude"]              = { label = "Prayer of Fortitude",            spellID = 21564 },
     ["Arcane Intellect"]                 = { label = "Arcane Intellect",               spellID = 10157 },
     ["Arcane Brilliance"]                = { label = "Arcane Brilliance",              spellID = 23028 },
+    ["Mage Armor"]                       = { label = "Mage Armor",                     spellID = 6117  },
     ["Mark of the Wild"]                 = { label = "Mark of the Wild",               spellID = 9885  },
     ["Gift of the Wild"]                 = { label = "Gift of the Wild",               spellID = 21850 },
     ["Thorns"]                           = { label = "Thorns",                         spellID = 9756  },
@@ -163,6 +164,16 @@ Addon.BuffDB = {
     ["Innervate"]                        = { label = "Innervate",                      spellID = 29166 },
 }
 
+-- Buffs that must be identified by spell ID because several sources share the same
+-- aura NAME (e.g. Mageblood Potion and Nightfin Soup both apply "Mana Regeneration").
+-- Selecting one of these stores item.spellID; matching is then by spell ID, not name.
+Addon.BuffSpellDB = {
+    -- Mageblood Potion: item 20007 applies aura spell 24363 (confirmed Classic Era).
+    { label = "Mageblood Potion", aura = "Mana Regeneration", spellID = 24363, itemID = 20007 },
+    -- Nightfin Soup: item 13931 applies the mp5 aura spell 18194 (confirmed Classic Era).
+    { label = "Nightfin Soup",    aura = "Mana Regeneration", spellID = 18194, itemID = 13931 },
+}
+
 local WEAPON_ENCHANT_ENTRIES = {
     { buffName = "", label = "Mainhand Enchant", weaponSlot = "mainhand" },
     { buffName = "", label = "Offhand Enchant",  weaponSlot = "offhand"  },
@@ -181,6 +192,12 @@ function Addon:SearchBuffDB(query)
         local label = data.label or buffName
         if query == "" or buffName:lower():find(query, 1, true) or label:lower():find(query, 1, true) then
             results[#results + 1] = { buffName = buffName, label = label, itemID = data.itemID, spellID = data.spellID }
+        end
+    end
+    -- Spell-ID-identified buffs (same aura name, different sources)
+    for _, e in ipairs(Addon.BuffSpellDB or {}) do
+        if query == "" or e.label:lower():find(query, 1, true) or e.aura:lower():find(query, 1, true) then
+            results[#results + 1] = { buffName = e.aura, label = e.label, itemID = e.itemID, spellID = e.spellID, bySpell = true }
         end
     end
     table.sort(results, function(a, b) return a.label < b.label end)

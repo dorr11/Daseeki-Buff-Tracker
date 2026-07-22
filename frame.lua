@@ -11,6 +11,11 @@ function Addon:IsItemMissing(item)
         local secs = Addon:GetWeaponEnchantSecondsRemaining(item.weaponSlot)
         return secs ~= nil and secs <= EXPIRY_WARN_SEC
     end
+    if item.spellID then
+        local best = Addon:GetSpellExpiry(item.spellID)
+        if best == nil then return true end
+        return best <= EXPIRY_WARN_SEC
+    end
     local names = Addon:GetBuffNames(item)
     if #names > 0 then
         local best = Addon:GetMultiBuffExpiry(names)
@@ -28,6 +33,11 @@ function Addon:GetItemExpirySeconds(item)
             local secs = Addon:GetWeaponEnchantSecondsRemaining(item.weaponSlot)
             if secs and secs <= EXPIRY_WARN_SEC then return secs end
         end
+        return nil
+    end
+    if item.spellID then
+        local best = Addon:GetSpellExpiry(item.spellID)
+        if best and best ~= math.huge and best <= EXPIRY_WARN_SEC then return best end
         return nil
     end
     local names = Addon:GetBuffNames(item)

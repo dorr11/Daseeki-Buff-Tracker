@@ -62,9 +62,12 @@ function Addon:Init()
     -- Migrate buff names that didn't match the actual UnitBuff() aura name, and
     -- clear stale cachedIcon values (e.g. from the count-as-icon bug).
     local BUFF_RENAMES = {
-        ["Mongoose"]   = "Elixir of the Mongoose",
-        ["Firewater"]  = "Winterfall Firewater",
-        ["R.O.I.D.S."] = "Rage of Ages",
+        ["Mongoose"]            = "Elixir of the Mongoose",
+        ["Firewater"]           = "Winterfall Firewater",
+        ["R.O.I.D.S."]          = "Rage of Ages",
+        ["Mageblood"]              = "Mana Regeneration",
+        ["Greater Fire Power"]     = "Greater Firepower",
+        ["Flask of Supreme Power"] = "Supreme Power",
     }
     for _, profile in pairs(db.profiles or {}) do
         for _, item in ipairs(profile.items or {}) do
@@ -74,6 +77,26 @@ function Addon:Init()
             if item.buffNames then
                 for i, n in ipairs(item.buffNames) do
                     if BUFF_RENAMES[n] then item.buffNames[i] = BUFF_RENAMES[n] end
+                end
+            end
+            -- Legacy Mageblood tracking was name-only; before Nightfin existed the
+            -- only "Mana Regeneration" source was Mageblood, so upgrade it to the
+            -- precise spell ID (24363) now that same-name buffs are distinguished.
+            -- GATE: only upgrade the actual legacy Mageblood tracker. We must NOT
+            -- convert a deliberately-created Nightfin Soup entry (or a user who typed
+            -- "Mana Regeneration" meaning Nightfin) into Mageblood. The BUFF_RENAMES
+            -- pass above has already rewritten the aura name from "Mageblood" to
+            -- "Mana Regeneration", so the only surviving signal of the legacy source is
+            -- the displayName, which stays "Mageblood Potion" for the legacy tracker.
+            if not item.spellID and not item.weaponSlot then
+                -- Handle both the single-string legacy buffName and the buffNames array.
+                local primary = (item.buffNames and item.buffNames[1]) or item.buffName
+                local dn = (item.displayName or ""):lower()
+                if primary == "Mana Regeneration" and dn:find("mageblood", 1, true) then
+                    item.spellID     = 24363
+                    item.displayName = "Mageblood Potion"
+                    item.buffName    = nil
+                    item.buffNames   = { "Mana Regeneration" }
                 end
             end
             if type(item.cachedIcon) ~= "string" then item.cachedIcon = nil end
@@ -190,6 +213,25 @@ function Addon:GetMultiBuffExpiry(buffNames)
     return best
 end
 
+-- Returns seconds remaining if an aura with the given spell ID is present
+-- (math.huge if permanent), nil if missing. Used to distinguish buffs that share
+-- the same aura name (e.g. Mageblood Potion vs Nightfin Soup = "Mana Regeneration").
+function Addon:GetSpellExpiry(spellID)
+    if not spellID then return nil end
+    for i = 1, 40 do
+        -- Classic Era UnitBuff: name, icon, count, dispel, duration, expiration, source, isStealable, nameplate, spellId
+        local name, _, _, _, _, expirationTime, _, _, _, auraSpellID = UnitBuff("player", i)
+        if not name then break end
+        if auraSpellID == spellID then
+            if expirationTime and expirationTime > 0 then
+                return expirationTime - GetTime()
+            end
+            return math.huge
+        end
+    end
+    return nil
+end
+
 -- Returns seconds remaining if buff is present (math.huge if permanent), nil if missing.
 function Addon:GetBuffExpiry(buffName)
     if not buffName or buffName == "" then return nil end
@@ -215,6 +257,28 @@ function Addon:GetBuffIcon(item)
         local invSlot = item.weaponSlot == "offhand" and 17 or 16
         return GetInventoryItemTexture("player", invSlot)
             or "Interface\\Icons\\INV_Stone_SharpeningStone05"
+    end
+    -- Spell-ID-identified entry: resolve via active aura, then item, then spell.
+    if item.spellID then
+        for i = 1, 40 do
+            local name, icon, _, _, _, _, _, _, _, sid = UnitBuff("player", i)
+            if not name then break end
+            if sid == item.spellID then return icon end
+        end
+        -- Prefer an item icon (the click item, else the source item from BuffSpellDB)
+        local iconItemID = (item.itemID and item.itemID > 0) and item.itemID or nil
+        if not iconItemID and Addon.BuffSpellDB then
+            for _, e in ipairs(Addon.BuffSpellDB) do
+                if e.spellID == item.spellID then iconItemID = e.itemID; break end
+            end
+        end
+        if iconItemID then
+            local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(iconItemID)
+            if tex then return tex end
+        end
+        local _, _, sicon = GetSpellInfo(item.spellID)
+        if sicon then return sicon end
+        return "Interface\\Icons\\INV_Misc_QuestionMark"
     end
     if item.cachedIcon and type(item.cachedIcon) == "string" then return item.cachedIcon end
     item.cachedIcon = nil  -- clear any stale non-string value
