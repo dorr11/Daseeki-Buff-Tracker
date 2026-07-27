@@ -808,7 +808,7 @@ function Addon:BuildOptions(flow)
     crud:Button({ text = "New", width = 84, onClick = function()
         ShowNameInputDialog("New Profile", "", function(name)
             local ok, err = Addon:CreateProfile(name)
-            if ok then bt.selectedProfileName = name; RefreshProfiles()
+            if ok then bt.selectedProfileName = name; RefreshProfiles(); Addon:RefreshItemList()
             else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
         end)
     end })
