@@ -217,6 +217,11 @@ local function BuildBuffList(flow)
 
     host.arrange = function(width)
         host:SetWidth(width)
+        host:SetHeight(BUFFLIST_H)   -- BUG FIX (matches Armory buildSetList): without an
+        -- explicit height the FlatFrame host defaults to 0px tall, so its backdrop and the
+        -- scroll viewport anchored to it (TOPLEFT..BOTTOMRIGHT of a 0-height frame) collapse
+        -- and every tracked-buff row is culled — the blank band under "Tracked Buffs". The
+        -- cursor still advanced by the returned BUFFLIST_H, which is why the gap was reserved.
         child:SetWidth(math.max(1, width - 2 * LIST_INSET))
         return BUFFLIST_H
     end
@@ -426,6 +431,8 @@ local function BuildEditor(flow)
     end
     tagHost.arrange = function(width)
         tagHost:SetWidth(width)
+        tagHost:SetHeight(TAG_H)   -- give the host a real height so its tag children have
+        -- a resolvable rect (same zero-height culling class as the buff list host).
         local x = 0
         for i = 1, 3 do
             local tag = E.altTags[i]
