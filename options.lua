@@ -75,6 +75,13 @@ local LBL_FACT_W     = 58   -- "Faction:" label width
 local TAG_W          = 84   -- alt-buff tag width
 local TAG_H          = 20   -- alt-buff tag height
 local TAG_GAP        = 4    -- gap between alt-buff tags
+-- Two-pane split (round-5 item F — mirrors Armory Sets): a ~300px left column
+-- (Profiles + Frame Settings) beside a wider right column (Tracked Buffs + editor).
+local SPLIT_LEFT     = 300  -- left column width in two-pane mode
+local SPLIT_GAP      = 16   -- gap between the two columns
+local SPLIT_MIN      = 716  -- content width to render side-by-side (left+gap+min right)
+local MGMT_BTN       = 142  -- profile management button width (2 per row in the left column)
+local MGMT_GRID      = MGMT_BTN * 2 + 8  -- full management-grid width (two buttons + ITEM_GAP=8) = 292
 
 local function rowGap() return (DaseekiUI.Token and DaseekiUI.Token("rowGap")) or 10 end
 
@@ -784,11 +791,23 @@ function Addon:BuildOptions(flow)
     Addon.optionsPanel = flow.pane   -- main.lua checks optionsPanel:IsShown()
     bt.selectedProfileName = Addon:GetActiveProfile()
 
-    -- ── Section: Profiles ─────────────────────────────────────────────────────
-    flow:AddSection("Profiles")
-    flow:Hint("Select a profile to edit its tracked buffs. Set Active applies it to the on-screen tracker.")
+    -- Two-pane composition (round-5 item F): one split block hosts a left column
+    -- (Profiles + Frame Settings) and a right column (Tracked Buffs + editor). They
+    -- render side-by-side above SPLIT_MIN (always, given Core's MIN_W) and stack below
+    -- it. Each column sizes itself to its content; the outer pane scrolls. Sliders now
+    -- live in the ~300px left column, so their full-width stretch is bounded there
+    -- (no more edge-to-edge sliders).
+    local split    = CreateFrame("Frame", nil, flow.pane.child)
+    local leftCol  = UI.CreateColumn(split)
+    local rightCol = UI.CreateColumn(split)
+    local L, R = leftCol.flow, rightCol.flow
 
-    bt.profileList = flow:List({
+    -- ══ LEFT COLUMN ═══════════════════════════════════════════════════════════
+    -- ── Section: Profiles ─────────────────────────────────────────────────────
+    L:AddSection("Profiles")
+    L:Hint("Select a profile to edit its tracked buffs. Set Active applies it to the on-screen tracker.")
+
+    bt.profileList = L:List({
         height = PROFILE_LIST_H,
         selected = bt.selectedProfileName,
         items = function()
@@ -811,15 +830,16 @@ function Addon:BuildOptions(flow)
         end,
     })
 
-    local crud = flow:AddRow()
-    crud:Button({ text = "New", width = 84, onClick = function()
+    -- New / Clone / Rename / Delete — 2×2 grid so they fit the ~300px column.
+    local crud1 = L:AddRow()
+    crud1:Button({ text = "New", width = MGMT_BTN, onClick = function()
         ShowNameInputDialog("New Profile", "", function(name)
             local ok, err = Addon:CreateProfile(name)
             if ok then bt.selectedProfileName = name; RefreshProfiles(); Addon:RefreshItemList()
             else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
         end)
     end })
-    crud:Button({ text = "Clone", width = 84, onClick = function()
+    crud1:Button({ text = "Clone", width = MGMT_BTN, onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         ShowNameInputDialog("Clone Profile", s .. " Copy", function(name)
             local ok, err = Addon:CloneProfile(s, name)
@@ -827,7 +847,8 @@ function Addon:BuildOptions(flow)
             else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
         end)
     end })
-    crud:Button({ text = "Rename", width = 84, onClick = function()
+    local crud2 = L:AddRow()
+    crud2:Button({ text = "Rename", width = MGMT_BTN, onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         ShowNameInputDialog("Rename Profile", s, function(name)
             local ok, err = Addon:RenameProfile(s, name)
@@ -835,26 +856,27 @@ function Addon:BuildOptions(flow)
             else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
         end)
     end })
-    crud:Button({ text = "Delete", width = 84, variant = "danger", onClick = function()
+    crud2:Button({ text = "Delete", width = MGMT_BTN, variant = "danger", onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         local ok, err = Addon:DeleteProfile(s)
         if ok then bt.selectedProfileName = Addon:GetActiveProfile(); RefreshProfiles(); Addon:RefreshItemList()
         else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
     end })
 
-    local pio = flow:AddRow()
-    pio:Button({ text = "Set Active", width = 110, onClick = function()
+    -- Set Active spans the full grid width; Export / Import as a matching 2-up row.
+    L:AddRow():Button({ text = "Set Active", width = MGMT_GRID, onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         Addon:SetActiveProfile(s)
         RefreshProfiles()
     end })
-    pio:Button({ text = "Export", width = 90, onClick = function()
+    local pio = L:AddRow()
+    pio:Button({ text = "Export", width = MGMT_BTN, onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         local str, err = Addon:ExportProfile(s)
         if str then ShowTextDialog("Export: " .. s, str, true)
         else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
     end })
-    pio:Button({ text = "Import", width = 90, onClick = function()
+    pio:Button({ text = "Import", width = MGMT_BTN, onClick = function()
         ShowTextDialog("Import Profile (paste string below)", "", false, function(txt)
             local ok, result = Addon:ImportProfile(txt)
             if ok then
@@ -865,9 +887,9 @@ function Addon:BuildOptions(flow)
     end })
 
     -- ── Section: Frame Settings ───────────────────────────────────────────────
-    flow:AddSection("Frame Settings")
+    L:AddSection("Frame Settings")
 
-    flow:AddChecklist({
+    L:AddChecklist({
         { label = "Lock",
           get = function() return Addon.db.settings.locked end,
           set = function(v) Addon.db.settings.locked = v; Addon:UpdateFrameLock() end },
@@ -876,7 +898,7 @@ function Addon:BuildOptions(flow)
           set = function(v) Addon.db.settings.showTooltip = v end },
     })
 
-    local hudRow = flow:AddRow()
+    local hudRow = L:AddRow()
     local hudLbl = hudRow:Label("Show HUD:"); hudLbl.uiWidth = 70; hudLbl:SetWidth(70)
     hudRow:SegmentedChoice({
         choices = { { value = "always", text = "Always" }, { value = "raid", text = "In Raid" } },
@@ -884,26 +906,26 @@ function Addon:BuildOptions(flow)
         set = function(v) Addon.db.settings.showCondition = v; Addon:UpdateFrame() end,
     })
 
-    flow:Slider({
+    L:Slider({
         label = "Scale", width = 220, min = 0.5, max = 2.0, step = 0.05,
         get = function() return Addon.db.settings.scale end,
         set = function(v) Addon.db.settings.scale = v; if Addon.mainFrame then Addon.mainFrame:SetScale(v) end end,
         format = function(v) return string.format("%.2f", v) end,
     })
-    flow:Slider({
+    L:Slider({
         label = "Spacing", width = 220, min = 0, max = 20, step = 1,
         get = function() return Addon.db.settings.iconSpacing end,
         set = function(v) Addon.db.settings.iconSpacing = v; Addon:UpdateFrame() end,
         format = function(v) return tostring(v) end,
     })
-    flow:Slider({
+    L:Slider({
         label = "Per Row", width = 220, min = 1, max = 16, step = 1,
         get = function() return Addon.db.settings.iconsPerRow end,
         set = function(v) Addon.db.settings.iconsPerRow = v; Addon:UpdateFrame() end,
         format = function(v) return tostring(v) end,
     })
 
-    bt.anchorDD = flow:AddRow():Dropdown({
+    bt.anchorDD = L:AddRow():Dropdown({
         label = "Anchor", width = 120, choices = { "Right", "Left" },
         get = function()
             local a = Addon.db.settings.anchor or "RIGHT"
@@ -912,18 +934,19 @@ function Addon:BuildOptions(flow)
         set = function(v) Addon:SetAnchor(v:upper()) end,
     })
 
+    -- ══ RIGHT COLUMN ══════════════════════════════════════════════════════════
     -- ── Section: Tracked Buffs ────────────────────────────────────────────────
-    flow:AddSection("Tracked Buffs")
+    R:AddSection("Tracked Buffs")
 
-    local hdr = flow:AddRow()
+    local hdr = R:AddRow()
     local h1 = hdr:Label("Buff", { muted = true });    h1.uiWidth = 200; h1:SetWidth(200)
     local h2 = hdr:Label("Action", { muted = true });  h2.uiWidth = ACT_W; h2:SetWidth(ACT_W)
     hdr:Label("Faction", { muted = true })
 
-    local listHost = BuildBuffList(flow)
-    addBlock(flow, listHost, listHost.arrange, rowGap())
+    local listHost = BuildBuffList(R)
+    addBlock(R, listHost, listHost.arrange, rowGap())
 
-    flow:AddRow():Button({ text = "Add Buff", width = 90, onClick = function()
+    R:AddRow():Button({ text = "Add Buff", width = 90, onClick = function()
         local sel = bt.selectedProfileName
         if not sel then print("|cffff4444[DaseekiBT]|r Select a profile first"); return end
         local blank = {
@@ -941,7 +964,36 @@ function Addon:BuildOptions(flow)
         E.ebBuff:SetText(""); E.ebBuff:SetFocus()
     end })
 
-    BuildEditor(flow)
+    BuildEditor(R)
+
+    -- ── Split arrange: side-by-side at >= SPLIT_MIN (Armory Sets pattern) ──────
+    split.arrange = function(width)
+        split:SetWidth(width)
+        if width >= SPLIT_MIN then
+            local lw = SPLIT_LEFT
+            local rw = math.max(1, width - lw - SPLIT_GAP)
+            local lh = leftCol:Layout(lw)
+            local rh = rightCol:Layout(rw)
+            leftCol.frame:ClearAllPoints()
+            leftCol.frame:SetPoint("TOPLEFT", split, "TOPLEFT", 0, 0)
+            rightCol.frame:ClearAllPoints()
+            rightCol.frame:SetPoint("TOPLEFT", split, "TOPLEFT", lw + SPLIT_GAP, 0)
+            local total = math.max(lh, rh)
+            split:SetHeight(math.max(total, 1))
+            return total
+        else
+            local lh = leftCol:Layout(width)
+            local rh = rightCol:Layout(width)
+            leftCol.frame:ClearAllPoints()
+            leftCol.frame:SetPoint("TOPLEFT", split, "TOPLEFT", 0, 0)
+            rightCol.frame:ClearAllPoints()
+            rightCol.frame:SetPoint("TOPLEFT", split, "TOPLEFT", 0, -(lh + SPLIT_GAP))
+            local total = lh + SPLIT_GAP + rh
+            split:SetHeight(math.max(total, 1))
+            return total
+        end
+    end
+    addBlock(flow, split, split.arrange, rowGap())
 
     -- First paint.
     RefreshProfiles()
