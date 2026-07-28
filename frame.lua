@@ -71,25 +71,116 @@ function Addon:GetVisibleItems()
 end
 
 -- ============================================================
--- ButtonOverlay glow (same glow type as WeakAuras)
+-- HUD icon glow -- self-contained spell-activation-style overlay.
+--
+-- Classic Era 1.15.x removed the legacy FrameXML overlay-glow show/hide
+-- globals this used to call, so the old glow silently no-oped. This
+-- reimplementation depends on none of them. It rebuilds the golden activation
+-- glow (bright ring + spinning sparkle) using ONLY CreateFrame /
+-- CreateTexture / AnimationGroup and Blizzard's shipped art files. Asset
+-- FILES are client data and are stable across UI rewrites; no removed
+-- FrameXML / SpellActivationOverlay *function* is referenced.
 -- ============================================================
+local GLOW_SCALE = 1.55   -- ring sits out on the icon border, as before
+
+-- Smooth (non-flipbook) golden-glow sub-regions inside Blizzard's shipped
+-- Interface\SpellActivationOverlay\IconAlert texture atlas. These texcoords
+-- select the soft outer glow and the sparkle -- they describe rectangles of
+-- the client's own art file (data), not any removed code path.
+local GLOW_TEX      = [[Interface\SpellActivationOverlay\IconAlert]]
+local TC_OUTER_GLOW = { 0.00781250, 0.50781250, 0.53515625, 0.78515625 }
+local TC_SPARK      = { 0.00781250, 0.61718750, 0.00390625, 0.26953125 }
+
+-- Guaranteed-present procedural fallback ring: the classic golden
+-- action-button glow border. Drawn at a modest additive alpha so it blends
+-- into the IconAlert glow when that art loads, and remains a visible golden
+-- ring on its own if IconAlert is ever absent (degrade, never nothing).
+local BORDER_TEX = [[Interface\Buttons\UI-ActionButton-Border]]
+
+-- Build the reusable per-button overlay once (btn.overlay lifecycle, as before).
+-- Non-secure child frame: creating/sizing/animating it is combat-safe -- we only
+-- ever anchor OUR frame to the secure button, never move the secure button.
+local function BuildGlow(btn)
+    local o = CreateFrame("Frame", nil, btn)
+    o:SetFrameLevel(btn:GetFrameLevel() + 5)
+    o:Hide()
+
+    -- Soft golden outer glow -- the body of the ring.
+    local glow = o:CreateTexture(nil, "OVERLAY")
+    glow:SetTexture(GLOW_TEX)
+    glow:SetTexCoord(unpack(TC_OUTER_GLOW))
+    glow:SetBlendMode("ADD")
+    glow:SetVertexColor(1.0, 0.9, 0.5)
+    glow:SetAllPoints(o)
+
+    -- Procedural golden border ring -- reinforces the edge, and is the sole
+    -- ring if the IconAlert art fails to load.
+    local ring = o:CreateTexture(nil, "OVERLAY")
+    ring:SetTexture(BORDER_TEX)
+    ring:SetBlendMode("ADD")
+    ring:SetVertexColor(1.0, 0.85, 0.30)
+    ring:SetAlpha(0.55)
+    ring:SetAllPoints(o)
+
+    -- Spinning sparkle for the "animated" motion.
+    local spark = o:CreateTexture(nil, "OVERLAY")
+    spark:SetTexture(GLOW_TEX)
+    spark:SetTexCoord(unpack(TC_SPARK))
+    spark:SetBlendMode("ADD")
+    spark:SetVertexColor(1.0, 0.95, 0.6)
+    spark:SetPoint("CENTER", o, "CENTER", 0, 0)
+    o.spark = spark
+
+    -- Breathing pulse: fades the whole overlay dim<->bright on a loop.
+    local pulse = o:CreateAnimationGroup()
+    pulse:SetLooping("BOUNCE")
+    local a = pulse:CreateAnimation("Alpha")
+    a:SetFromAlpha(0.45)
+    a:SetToAlpha(1.0)
+    a:SetDuration(0.6)
+    a:SetSmoothing("IN_OUT")
+    o.pulse = pulse
+
+    -- Continuous rotation, targeted at the sparkle texture (group lives on the
+    -- frame; SetTarget aims the rotation at the child texture).
+    local spin = o:CreateAnimationGroup()
+    spin:SetLooping("REPEAT")
+    local rot = spin:CreateAnimation("Rotation")
+    rot:SetTarget(spark)
+    rot:SetDegrees(-360)
+    rot:SetDuration(3.0)
+    o.spin = spin
+
+    return o
+end
+
 local function ShowGlow(btn)
-    if not ActionButton_ShowOverlayGlow then return end
-    ActionButton_ShowOverlayGlow(btn)
-    -- Blizzard sizes the glow once with fixed proportions, leaving the bright ring
-    -- slightly inside the button edge and not tracking our button size. Re-anchor it
-    -- to the current button so it scales with the icon and sits on its border.
-    local glow = btn.overlay or btn.SpellActivationAlert or btn.__LBGoverlay
-    if glow then
-        local w, h = btn:GetSize()
-        glow:ClearAllPoints()
-        glow:SetSize(w * 1.55, h * 1.55)  -- pushes the glow ring out onto the icon border
-        glow:SetPoint("CENTER", btn, "CENTER", 0, 0)
+    local o = btn.overlay
+    if not o then
+        o = BuildGlow(btn)
+        btn.overlay = o
+    end
+    local w, h = btn:GetSize()
+    if not w or w <= 0 then w = 32 end
+    if not h or h <= 0 then h = 32 end
+    o:ClearAllPoints()
+    o:SetSize(w * GLOW_SCALE, h * GLOW_SCALE)   -- track current icon size
+    o:SetPoint("CENTER", btn, "CENTER", 0, 0)
+    o.spark:SetSize(w * GLOW_SCALE * 0.9, h * GLOW_SCALE * 0.9)
+    if not o:IsShown() then
+        o:Show()
+        o.pulse:Play()
+        o.spin:Play()
     end
 end
 
 local function HideGlow(btn)
-    if ActionButton_HideOverlayGlow then ActionButton_HideOverlayGlow(btn) end
+    local o = btn.overlay
+    if o and o:IsShown() then
+        o.pulse:Stop()
+        o.spin:Stop()
+        o:Hide()
+    end
 end
 
 -- ============================================================
