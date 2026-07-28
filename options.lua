@@ -986,6 +986,11 @@ function Addon:BuildOptions(flow)
         get = function() return Addon.db.settings.showCondition or "always" end,
         set = function(v) Addon.db.settings.showCondition = v; Addon:UpdateFrame() end,
     })
+    -- MakeSegmented sets its own height at creation but only publishes uiWidth for the
+    -- row engine to apply. This composite has no row engine, so the segmented would stay
+    -- width-0 and be culled inside the clipping pane. Size it explicitly (the framework
+    -- now self-sizes too; this stays as belt-and-suspenders for the hand-built column).
+    hudSeg:SetWidth(hudSeg.uiWidth)
     hudSeg:SetPoint("TOPLEFT", hudCol, "TOPLEFT", 0, -LBL_BAND)
     hudCol.uiWidth  = hudSeg.uiWidth
     hudCol.uiHeight = LBL_BAND + hudSeg.uiHeight
