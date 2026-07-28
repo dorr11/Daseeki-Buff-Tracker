@@ -69,9 +69,14 @@ local ACT_W          = 64   -- action column width
 local FACT_W         = 56   -- faction column width
 local REMOVE_W       = 22   -- remove button width
 local PROFILE_LIST_H = 140  -- profile List viewport height
-local LBL_BUFF_W     = 40   -- "Buff:"/"Alt:" label column width
-local LBL_USE_W      = 64   -- "Use Item:"/"Macro:" label width
-local LBL_FACT_W     = 58   -- "Faction:" label width
+-- Round-10 item 5: ONE editor label column so every field left-aligns to a shared x.
+-- LBL_W (56) clears the widest label ("Use Item" ~46px at body 12), and the row engine
+-- places the field at LBL_W + ITEM_GAP, so FIELD_X is the shared field origin.
+local ROW_ITEM_GAP   = 8    -- mirrors Core's inter-item gap (daseekiui ITEM_GAP)
+local LBL_W          = 56   -- unified editor label column width (was 40/64/58)
+local FIELD_X        = LBL_W + ROW_ITEM_GAP  -- shared left x of every editor field/control
+local BUFF_FIELD_W   = 200  -- Buff / Alt search box width (fixed; content hugs, no stretch)
+local ACT_FIELD_W    = 240  -- Use Item / Macro search box width
 local TAG_W          = 84   -- alt-buff tag width
 local TAG_H          = 20   -- alt-buff tag height
 local TAG_GAP        = 4    -- gap between alt-buff tags
@@ -157,9 +162,15 @@ local function BuildBuffList(flow)
     child:SetSize(1, 1)
     scroll:SetScrollChild(child)
     scroll:SetScript("OnMouseWheel", function(self, delta)
-        local cur  = self:GetVerticalScroll()
         local maxs = math.max(0, child:GetHeight() - self:GetHeight())
-        self:SetVerticalScroll(math.max(0, math.min(maxs, cur - delta * 24)))
+        if maxs > 0 then
+            local cur = self:GetVerticalScroll()
+            self:SetVerticalScroll(math.max(0, math.min(maxs, cur - delta * 24)))
+        elseif DaseekiUI.ForwardWheelToPane then
+            -- Short list: hand the wheel to the page pane so scrolling still works while
+            -- the cursor is over the tracked-buff list (round-10 scroll fix, list side).
+            DaseekiUI.ForwardWheelToPane(self, delta)
+        end
     end)
     bt.listChild, bt.listScroll = child, scroll
 
@@ -303,6 +314,8 @@ local PopulateEditor, AutoSave, updateEditorVis, updateAltTags
 local function searchBox(row, width, maxLetters)
     local f = row:EditBox({ width = width, get = function() return "" end })
     f:SetScript("OnShow", nil)
+    f._fillWidth = false   -- editor fields are fixed-width (item 5: hug width, no stretch;
+                           -- also keeps the icon/Add-Alt trailing column at a fixed x)
     f.editBox:SetMaxLetters(maxLetters or 128)
     return f, f.editBox
 end
@@ -343,17 +356,17 @@ local function BuildEditor(flow)
     local hint = E.hintRow:Label("Click a buff row to edit, or Add Buff for a new entry.", { muted = true })
     hint.uiWidth = 420; hint:SetWidth(420)
 
-    -- Row 1: Buff search + icon preview (pinned right).
+    -- Row 1: Buff search + icon preview placed right of the field at a fixed offset.
     E.buffRow = condRow(cflow)
-    local bl = E.buffRow:Label("Buff:"); bl.uiWidth = LBL_BUFF_W; bl:SetWidth(LBL_BUFF_W)
-    local _, ebBuff = searchBox(E.buffRow, 220, 128); E.ebBuff = ebBuff
+    local bl = E.buffRow:Label("Buff"); bl.uiWidth = LBL_W; bl:SetWidth(LBL_W)
+    local _, ebBuff = searchBox(E.buffRow, BUFF_FIELD_W, 128); E.ebBuff = ebBuff
     local prev = CreateFrame("Frame", nil, E.buffRow)
     prev:SetSize(PREV_SZ, PREV_SZ)
     prev.uiWidth, prev.uiHeight = PREV_SZ, PREV_SZ
     E.prevTex = prev:CreateTexture(nil, "ARTWORK")
     E.prevTex:SetAllPoints(); E.prevTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     E.prevTex:SetTexture(QUESTION)
-    addCustom(E.buffRow, prev, "right")
+    addCustom(E.buffRow, prev)   -- left item after the field → sits at FIELD_X+field+gap
 
     AttachSearchDropdown(E.ebBuff, 300,
         function(q) return Addon:SearchBuffDB(q) end, "label", "buffName",
@@ -388,10 +401,11 @@ local function BuildEditor(flow)
         AutoSave()
     end)
 
-    -- Row 2: Alt buff search + Add Alt button.
+    -- Row 2: Alt buff search + Add Alt button (Add Alt trails the field, aligning under
+    -- the Buff row's icon → a clean trailing column).
     E.altRow = condRow(cflow)
-    local al = E.altRow:Label("Alt:"); al.uiWidth = LBL_BUFF_W; al:SetWidth(LBL_BUFF_W)
-    local _, ebAlt = searchBox(E.altRow, 180, 128); E.ebAltBuff = ebAlt
+    local al = E.altRow:Label("Alt"); al.uiWidth = LBL_W; al:SetWidth(LBL_W)
+    local _, ebAlt = searchBox(E.altRow, BUFF_FIELD_W, 128); E.ebAltBuff = ebAlt
 
     local function AddAltBuff()
         local name = strtrim(E.ebAltBuff:GetText())
@@ -406,7 +420,7 @@ local function BuildEditor(flow)
             AutoSave()
         end
     end
-    E.altRow:Button({ text = "Add Alt", width = 66, pin = "right", onClick = AddAltBuff })
+    E.altRow:Button({ text = "Add Alt", width = 66, onClick = AddAltBuff })
 
     AttachSearchDropdown(E.ebAltBuff, 200,
         function(q) return Addon:SearchBuffDB(q) end, "label", "buffName",
@@ -440,7 +454,7 @@ local function BuildEditor(flow)
         tagHost:SetWidth(width)
         tagHost:SetHeight(TAG_H)   -- give the host a real height so its tag children have
         -- a resolvable rect (same zero-height culling class as the buff list host).
-        local x = 0
+        local x = FIELD_X   -- chips align under the Alt field (item 5)
         for i = 1, 3 do
             local tag = E.altTags[i]
             if E._buffNames[i + 1] then
@@ -464,8 +478,10 @@ local function BuildEditor(flow)
         end
     end
 
-    -- Row 4: Clickable toggle.
+    -- Row 4: Clickable toggle (blank label spacer lands the checkbox at FIELD_X so it
+    -- lines up with the field column above/below it).
     E.clickRow = condRow(cflow)
+    local csp = E.clickRow:Label(""); csp.uiWidth = LBL_W; csp:SetWidth(LBL_W)
     E.cbClickable = E.clickRow:Checkbox({
         label = "Clickable",
         get = function() return E._clickable end,
@@ -474,7 +490,7 @@ local function BuildEditor(flow)
 
     -- Row 5: Action type — SegmentedChoice replaces the two overlapping radio rows.
     E.actionRow = condRow(cflow)
-    local actLbl = E.actionRow:Label("Action:"); actLbl.uiWidth = LBL_USE_W; actLbl:SetWidth(LBL_USE_W)
+    local actLbl = E.actionRow:Label("Action"); actLbl.uiWidth = LBL_W; actLbl:SetWidth(LBL_W)
     E.seg = E.actionRow:SegmentedChoice({
         choices = { { value = "item", text = "Item" }, { value = "macro", text = "Macro" } },
         get = function() return E._actionType or "item" end,
@@ -483,8 +499,8 @@ local function BuildEditor(flow)
 
     -- Row 6a: Item search (visible only when clickable + Item mode).
     E.itemRow = condRow(cflow)
-    local il = E.itemRow:Label("Use Item:"); il.uiWidth = LBL_USE_W; il:SetWidth(LBL_USE_W)
-    local _, ebItem = searchBox(E.itemRow, 280, 128); E.ebItem = ebItem
+    local il = E.itemRow:Label("Use Item"); il.uiWidth = LBL_W; il:SetWidth(LBL_W)
+    local _, ebItem = searchBox(E.itemRow, ACT_FIELD_W, 128); E.ebItem = ebItem
     E._selectedItemID = 0
     AttachSearchDropdown(E.ebItem, 300,
         function(q) return Addon:SearchItemDB(q) end, "itemName", "itemName",
@@ -493,8 +509,8 @@ local function BuildEditor(flow)
 
     -- Row 6b: Macro search (visible only when clickable + Macro mode).
     E.macroRow = condRow(cflow)
-    local mlab = E.macroRow:Label("Macro:"); mlab.uiWidth = LBL_USE_W; mlab:SetWidth(LBL_USE_W)
-    local _, ebMacro = searchBox(E.macroRow, 280, 64); E.ebMacro = ebMacro
+    local mlab = E.macroRow:Label("Macro"); mlab.uiWidth = LBL_W; mlab:SetWidth(LBL_W)
+    local _, ebMacro = searchBox(E.macroRow, ACT_FIELD_W, 64); E.ebMacro = ebMacro
     AttachSearchDropdown(E.ebMacro, 300,
         function(q) return Addon:SearchMacros(q) end, "macroName", "macroName",
         function() AutoSave() end, MacroIconGetter)
@@ -502,7 +518,7 @@ local function BuildEditor(flow)
 
     -- Row 7: Faction + Cancel.
     E.factionRow = condRow(cflow)
-    local fl = E.factionRow:Label("Faction:"); fl.uiWidth = LBL_FACT_W; fl:SetWidth(LBL_FACT_W)
+    local fl = E.factionRow:Label("Faction"); fl.uiWidth = LBL_W; fl:SetWidth(LBL_W)
     E.factionDD = E.factionRow:Dropdown({
         width = 110, choices = { "Both", "Alliance", "Horde", "None" },
         get = function() return E._faction or "Both" end,
@@ -515,8 +531,10 @@ local function BuildEditor(flow)
         updateEditorVis()
     end })
 
-    -- Row 8: weapon-slot info (weapon-enchant entries only).
+    -- Row 8: weapon-slot info (weapon-enchant entries only). Blank spacer aligns the
+    -- note under the field column for the same vertical rhythm as the rows above.
     E.weaponRow = condRow(cflow)
+    local wsp = E.weaponRow:Label(""); wsp.uiWidth = LBL_W; wsp:SetWidth(LBL_W)
     E.weaponLabel = E.weaponRow:Label("", { muted = true })
     E.weaponLabel.uiWidth = 240; E.weaponLabel:SetWidth(240)
 
@@ -805,20 +823,32 @@ function Addon:BuildOptions(flow)
     -- ══ LEFT COLUMN ═══════════════════════════════════════════════════════════
     -- ── Section: Profiles ─────────────────────────────────────────────────────
     L:AddSection("Profiles")
-    L:Hint("Select a profile to edit its tracked buffs. Set Active applies it to the on-screen tracker.")
+    -- Item 6: one-line subtitle (fits the ~300px column at small font — see fit note).
+    L:Hint("Set Active applies a profile to the tracker.")
 
+    -- Item 1: active profile pinned first under an "ACTIVE" subheader; the rest under
+    -- "OTHER". Status dots stay as a secondary affordance; the grouping is the primary
+    -- distinction, so no dot is needed to find the active profile any longer.
+    local function TitleCase(name) return name:sub(1, 1):upper() .. name:sub(2):lower() end
     bt.profileList = L:List({
         height = PROFILE_LIST_H,
         selected = bt.selectedProfileName,
         items = function()
             local out = {}
             local active = Addon:GetActiveProfile()
+            if active and Addon.db.profiles[active] then
+                out[#out + 1] = { header = true, text = "ACTIVE" }
+                out[#out + 1] = { text = TitleCase(active), value = active, status = "ok" }
+            end
+            local others = {}
             for _, name in ipairs(Addon:GetProfileNames()) do
-                out[#out + 1] = {
-                    text   = name:sub(1, 1):upper() .. name:sub(2):lower(),
-                    value  = name,
-                    status = (name == active) and "ok" or "faint",
-                }
+                if name ~= active then others[#others + 1] = name end
+            end
+            if #others > 0 then
+                out[#out + 1] = { header = true, text = "OTHER" }
+                for _, name in ipairs(others) do
+                    out[#out + 1] = { text = TitleCase(name), value = name, status = "faint" }
+                end
             end
             return out
         end,
@@ -889,37 +919,46 @@ function Addon:BuildOptions(flow)
     -- ── Section: Frame Settings ───────────────────────────────────────────────
     L:AddSection("Frame Settings")
 
-    L:AddChecklist({
-        { label = "Lock",
-          get = function() return Addon.db.settings.locked end,
-          set = function(v) Addon.db.settings.locked = v; Addon:UpdateFrameLock() end },
-        { label = "Tooltips",
-          get = function() return Addon.db.settings.showTooltip end,
-          set = function(v) Addon.db.settings.showTooltip = v end },
+    -- Item 3: Lock + Tooltips checkboxes and the HUD control on ONE compact row.
+    -- Lock/Tooltips run from the left; the "HUD" label + Always/In-Raid segmented are
+    -- right-pinned (segmented, then label to its left) so the control sits flush to the
+    -- column edge and can never overflow it (fit arithmetic in the deliverable notes).
+    -- vAlign centers the 18px label / 20px checkbox / 24px segmented against each other.
+    local fsRow = L:AddRow({ vAlign = "center" })
+    fsRow:Checkbox({
+        label = "Lock",
+        get = function() return Addon.db.settings.locked end,
+        set = function(v) Addon.db.settings.locked = v; Addon:UpdateFrameLock() end,
     })
-
-    local hudRow = L:AddRow()
-    local hudLbl = hudRow:Label("Show HUD:"); hudLbl.uiWidth = 70; hudLbl:SetWidth(70)
-    hudRow:SegmentedChoice({
+    fsRow:Checkbox({
+        label = "Tooltips",
+        get = function() return Addon.db.settings.showTooltip end,
+        set = function(v) Addon.db.settings.showTooltip = v end,
+    })
+    local hudLbl = fsRow:Label("HUD", { pin = "right" }); hudLbl.uiWidth = 32; hudLbl:SetWidth(32)
+    fsRow:SegmentedChoice({
+        pin = "right", compact = true,
         choices = { { value = "always", text = "Always" }, { value = "raid", text = "In Raid" } },
         get = function() return Addon.db.settings.showCondition or "always" end,
         set = function(v) Addon.db.settings.showCondition = v; Addon:UpdateFrame() end,
     })
 
+    -- Item 4: compact sliders tighten the stack so the left column bottom lands ~level
+    -- with the Buff Editor card bottom at default window size.
     L:Slider({
-        label = "Scale", width = 220, min = 0.5, max = 2.0, step = 0.05,
+        label = "Scale", width = 220, compact = true, min = 0.5, max = 2.0, step = 0.05,
         get = function() return Addon.db.settings.scale end,
         set = function(v) Addon.db.settings.scale = v; if Addon.mainFrame then Addon.mainFrame:SetScale(v) end end,
         format = function(v) return string.format("%.2f", v) end,
     })
     L:Slider({
-        label = "Spacing", width = 220, min = 0, max = 20, step = 1,
+        label = "Spacing", width = 220, compact = true, min = 0, max = 20, step = 1,
         get = function() return Addon.db.settings.iconSpacing end,
         set = function(v) Addon.db.settings.iconSpacing = v; Addon:UpdateFrame() end,
         format = function(v) return tostring(v) end,
     })
     L:Slider({
-        label = "Per Row", width = 220, min = 1, max = 16, step = 1,
+        label = "Per Row", width = 220, compact = true, min = 1, max = 16, step = 1,
         get = function() return Addon.db.settings.iconsPerRow end,
         set = function(v) Addon.db.settings.iconsPerRow = v; Addon:UpdateFrame() end,
         format = function(v) return tostring(v) end,
@@ -938,10 +977,33 @@ function Addon:BuildOptions(flow)
     -- ── Section: Tracked Buffs ────────────────────────────────────────────────
     R:AddSection("Tracked Buffs")
 
-    local hdr = R:AddRow()
-    local h1 = hdr:Label("Buff", { muted = true });    h1.uiWidth = 200; h1:SetWidth(200)
-    local h2 = hdr:Label("Action", { muted = true });  h2.uiWidth = ACT_W; h2:SetWidth(ACT_W)
-    hdr:Label("Faction", { muted = true })
+    -- Item 7: column headers whose cells sit EXACTLY over the list columns. The list
+    -- rows anchor their columns from the RIGHT (remove | Faction | Action) and the name
+    -- fills the rest, all inside the scroll viewport which is inset LIST_INSET on each
+    -- side. So the header mirrors that geometry (muted-small, exact column widths, same
+    -- LIST_INSET offset) instead of using left-flowing labels that never lined up.
+    local hdrF = CreateFrame("Frame", nil, R.pane.child)
+    hdrF:SetHeight(16)
+    local function hcell(justify)
+        local fs = hdrF:CreateFontString(nil, "OVERLAY")
+        fs:SetFontObject(UI.fonts.small)
+        fs:SetJustifyH(justify)
+        UI.Skin(fs, function(self) self:SetTextColor(UI.Color("muted")) end)
+        return fs
+    end
+    local RIGHT_INSET = LIST_INSET + EDGE + REMOVE_W + GAP   -- past remove col to Faction's right edge
+    local NAME_X      = LIST_INSET + GAP + ICON_SZ + GAP     -- name/Buff column left (past the icon)
+    local hFact = hcell("CENTER"); hFact:SetWidth(FACT_W)
+    hFact:SetPoint("RIGHT", hdrF, "RIGHT", -RIGHT_INSET, 0)
+    hFact:SetText("Faction")
+    local hAct = hcell("CENTER"); hAct:SetWidth(ACT_W)
+    hAct:SetPoint("RIGHT", hFact, "LEFT", -GAP, 0)
+    hAct:SetText("Action")
+    local hBuff = hcell("LEFT")
+    hBuff:SetPoint("LEFT", hdrF, "LEFT", NAME_X, 0)
+    hBuff:SetPoint("RIGHT", hAct, "LEFT", -GAP, 0)
+    hBuff:SetText("Buff")
+    addBlock(R, hdrF, function(width) hdrF:SetWidth(width); return 16 end, rowGap())
 
     local listHost = BuildBuffList(R)
     addBlock(R, listHost, listHost.arrange, rowGap())
