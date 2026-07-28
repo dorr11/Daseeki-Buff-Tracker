@@ -478,19 +478,19 @@ local function BuildEditor(flow)
         end
     end
 
-    -- Row 4: Clickable toggle (blank label spacer lands the checkbox at FIELD_X so it
-    -- lines up with the field column above/below it).
-    E.clickRow = condRow(cflow)
-    local csp = E.clickRow:Label(""); csp.uiWidth = LBL_W; csp:SetWidth(LBL_W)
-    E.cbClickable = E.clickRow:Checkbox({
+    -- Row 4+5 (merged): the Action row LEADS with the Clickable checkbox — always visible
+    -- while a buff is selected — and reveals the Item/Macro segmented control beside it
+    -- only when Clickable is on. Merged because the segmented control is hidden whenever
+    -- Clickable is off (see updateEditorVis), so the checkbox has to live on a row that
+    -- stays visible; leading it keeps the label reading "Action" with the toggle attached.
+    -- Composition:  Action  [x] Clickable  [Item|Macro]   (segmented hidden when off).
+    E.actionRow = condRow(cflow)
+    local actLbl = E.actionRow:Label("Action"); actLbl.uiWidth = LBL_W; actLbl:SetWidth(LBL_W)
+    E.cbClickable = E.actionRow:Checkbox({
         label = "Clickable",
         get = function() return E._clickable end,
         set = function(v) E._clickable = v and true or false; updateEditorVis(); AutoSave() end,
     })
-
-    -- Row 5: Action type — SegmentedChoice replaces the two overlapping radio rows.
-    E.actionRow = condRow(cflow)
-    local actLbl = E.actionRow:Label("Action"); actLbl.uiWidth = LBL_W; actLbl:SetWidth(LBL_W)
     E.seg = E.actionRow:SegmentedChoice({
         choices = { { value = "item", text = "Item" }, { value = "macro", text = "Macro" } },
         get = function() return E._actionType or "item" end,
@@ -557,8 +557,11 @@ updateEditorVis = function()
     E.buffRow:SetApplicable(hasSel)
     E.altRow:SetApplicable(hasSel)
     E.altTagsHost:SetApplicable(hasSel and #E._buffNames > 1)
-    E.clickRow:SetApplicable(hasSel)
-    E.actionRow:SetApplicable(hasSel and clickable)
+    -- Action row stays visible whenever a buff is selected (it carries the Clickable
+    -- checkbox); the segmented control itself only shows when Clickable is on. It is the
+    -- last item on the row, so hiding it collapses to trailing whitespace — no gap.
+    E.actionRow:SetApplicable(hasSel)
+    E.seg:SetShown(hasSel and clickable)
     E.itemRow:SetApplicable(hasSel and clickable and mode == "item")
     E.macroRow:SetApplicable(hasSel and clickable and mode == "macro")
     E.factionRow:SetApplicable(hasSel)
@@ -919,11 +922,8 @@ function Addon:BuildOptions(flow)
     -- ── Section: Frame Settings ───────────────────────────────────────────────
     L:AddSection("Frame Settings")
 
-    -- Item 3: Lock + Tooltips checkboxes and the HUD control on ONE compact row.
-    -- Lock/Tooltips run from the left; the "HUD" label + Always/In-Raid segmented are
-    -- right-pinned (segmented, then label to its left) so the control sits flush to the
-    -- column edge and can never overflow it (fit arithmetic in the deliverable notes).
-    -- vAlign centers the 18px label / 20px checkbox / 24px segmented against each other.
+    -- Item 3: Lock + Tooltips checkboxes on ONE compact row. (The HUD Always/In-Raid
+    -- control moved down beside the Anchor dropdown as a labeled column — see below.)
     local fsRow = L:AddRow({ vAlign = "center" })
     fsRow:Checkbox({
         label = "Lock",
@@ -934,13 +934,6 @@ function Addon:BuildOptions(flow)
         label = "Tooltips",
         get = function() return Addon.db.settings.showTooltip end,
         set = function(v) Addon.db.settings.showTooltip = v end,
-    })
-    local hudLbl = fsRow:Label("HUD", { pin = "right" }); hudLbl.uiWidth = 32; hudLbl:SetWidth(32)
-    fsRow:SegmentedChoice({
-        pin = "right", compact = true,
-        choices = { { value = "always", text = "Always" }, { value = "raid", text = "In Raid" } },
-        get = function() return Addon.db.settings.showCondition or "always" end,
-        set = function(v) Addon.db.settings.showCondition = v; Addon:UpdateFrame() end,
     })
 
     -- Item 4: compact sliders tighten the stack so the left column bottom lands ~level
@@ -964,7 +957,14 @@ function Addon:BuildOptions(flow)
         format = function(v) return tostring(v) end,
     })
 
-    bt.anchorDD = L:AddRow():Dropdown({
+    -- Anchor + HUD as two side-by-side labeled columns on one row (round-12: HUD moved
+    -- off the Lock/Tooltips row). Anchor keeps the Dropdown's built-in label-above
+    -- geometry (label at y=0, control at y=-20, 44px tall). The HUD column mirrors that
+    -- geometry exactly — a muted-small "HUD" header (left-aligned, matching Anchor's
+    -- left-sitting label) over the Always/In-Raid segmented — so the two read as one
+    -- top-aligned group. Built as a composite frame because MakeSegmented has no label.
+    local anchorRow = L:AddRow()
+    bt.anchorDD = anchorRow:Dropdown({
         label = "Anchor", width = 120, choices = { "Right", "Left" },
         get = function()
             local a = Addon.db.settings.anchor or "RIGHT"
@@ -972,6 +972,25 @@ function Addon:BuildOptions(flow)
         end,
         set = function(v) Addon:SetAnchor(v:upper()) end,
     })
+
+    local LBL_BAND = 20   -- label band height above a label-above control (matches Dropdown)
+    local hudCol = CreateFrame("Frame", nil, L.pane.child)
+    local hudHdr = hudCol:CreateFontString(nil, "OVERLAY")
+    hudHdr:SetFontObject(UI.fonts.small)          -- muted-small header (UI.fonts idiom:
+    hudHdr:SetTextColor(UI.Color("muted"))        -- small font object + muted color)
+    hudHdr:SetPoint("TOPLEFT", hudCol, "TOPLEFT", 0, 0)   -- left-aligned, matching Anchor
+    hudHdr:SetText("HUD")
+    local hudSeg = UI.MakeSegmented(hudCol, {
+        compact = true,
+        choices = { { value = "always", text = "Always" }, { value = "raid", text = "In Raid" } },
+        get = function() return Addon.db.settings.showCondition or "always" end,
+        set = function(v) Addon.db.settings.showCondition = v; Addon:UpdateFrame() end,
+    })
+    hudSeg:SetPoint("TOPLEFT", hudCol, "TOPLEFT", 0, -LBL_BAND)
+    hudCol.uiWidth  = hudSeg.uiWidth
+    hudCol.uiHeight = LBL_BAND + hudSeg.uiHeight
+    hudCol:SetSize(hudCol.uiWidth, hudCol.uiHeight)
+    addCustom(anchorRow, hudCol)
 
     -- ══ RIGHT COLUMN ══════════════════════════════════════════════════════════
     -- ── Section: Tracked Buffs ────────────────────────────────────────────────
