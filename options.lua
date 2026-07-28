@@ -1119,6 +1119,10 @@ end
 -- ============================================================
 function Addon:RegisterOptions()
     if not _G.DaseekiSuite then return end
+    if not (_G.DaseekiUI and _G.DaseekiUI.Token) then
+        print("|cff00ccffDaseeki Buff Tracker|r requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
+        return
+    end
     DaseekiSuite:RegisterAddon({
         id    = "bufftracker",
         title = "Buff Tracker",
