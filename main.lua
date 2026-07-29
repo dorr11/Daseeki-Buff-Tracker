@@ -1,6 +1,45 @@
 local AddonName, Addon = ...
 DaseekiCT = Addon
 
+-- ── Field Ledger chat / type helpers (Core-optional; graceful without Daseeki-Core) ──
+-- BRAND_SPEC §2 tokens reach chat/HUD through these; each degrades to a legacy literal
+-- when Daseeki-Core (DaseekiUI) is absent, so the standalone HUD keeps working unchanged.
+
+-- Token → "|cffRRGGBB" escape prefix for chat strings; nil when Core is absent.
+function Addon:Hex(token)
+    local UI = _G.DaseekiUI
+    if not (UI and UI.Color) then return nil end
+    local r, g, b = UI.Color(token)
+    local function b255(v) return math.max(0, math.min(255, math.floor((v or 0) * 255 + 0.5))) end
+    return ("|cff%02x%02x%02x"):format(b255(r), b255(g), b255(b))
+end
+
+-- Wrap `text` in a token color for chat strings; plain text if Core is absent.
+function Addon:Wrap(token, text)
+    local h = Addon:Hex(token)
+    if not h then return tostring(text) end
+    return h .. tostring(text) .. "|r"
+end
+
+-- Brand-tinted chat identity tag (falls back to the legacy cyan tag without Core).
+function Addon:Tag(text)
+    text = text or "[DaseekiBT]"
+    local h = Addon:Hex("brand")
+    if h then return h .. text .. "|r" end
+    return "|cff00ccff" .. text .. "|r"
+end
+
+-- Apply the telemetry numeral (ARIALN+OUTLINE) font to a FontString when Core present;
+-- leaves the caller's existing font otherwise (BRAND_SPEC §3 durations → numeral).
+function Addon:TrySetNumeral(fs)
+    local UI = _G.DaseekiUI
+    if UI and UI.fonts and UI.fonts.numeral then
+        fs:SetFontObject(UI.fonts.numeral)
+        return true
+    end
+    return false
+end
+
 local DEFAULT_SETTINGS = {
     locked         = false,
     scale          = 1.0,
@@ -41,7 +80,7 @@ function Addon:Init()
         db.charProfiles   = nil
         db.charInitialized = nil
         db.dbVersion      = DB_VERSION
-        print("|cff00ccff[DaseekiBT]|r Profiles reset for v3 multi-buff model.")
+        print(Addon:Tag("[DaseekiBT]") .. " Profiles reset for v3 multi-buff model.")
     end
 
     if not db.settings then db.settings = {} end
@@ -129,7 +168,7 @@ function Addon:OnLogin()
     Addon:RegisterOptions()
     Addon:Refresh()
 
-    print("|cff00ccffDaseeki Buff Tracker|r loaded. Profile: |cffffffff" .. (Addon:GetActiveProfile() or "none") .. "|r  /dbt for options.")
+    print(Addon:Tag("Daseeki Buff Tracker") .. " loaded. Profile: " .. Addon:Wrap("text", Addon:GetActiveProfile() or "none") .. "  " .. Addon:Wrap("text", "/dbt") .. " for options.")
 end
 
 function Addon:GetActiveProfile()
@@ -435,7 +474,7 @@ SlashCmdList["DASEEKIBT"] = function(msg)
         if _G.DaseekiSuite then
             DaseekiSuite:Open("bufftracker")
         else
-            print("|cff00ccff[DaseekiBT]|r Install Daseeki Core for the options window.")
+            print(Addon:Tag("[DaseekiBT]") .. " Install Daseeki Core for the options window.")
         end
     elseif msg == "toggle" then
         local f = Addon.mainFrame
@@ -445,15 +484,15 @@ SlashCmdList["DASEEKIBT"] = function(msg)
     elseif msg == "lock" then
         Addon.db.settings.locked = not Addon.db.settings.locked
         Addon:UpdateFrameLock()
-        print("|cff00ccff[DaseekiBT]|r Frame " .. (Addon.db.settings.locked and "locked" or "unlocked"))
+        print(Addon:Tag("[DaseekiBT]") .. " Frame " .. (Addon.db.settings.locked and "locked" or "unlocked"))
     elseif msg == "reset" then
         Addon.db.settings.point    = DEFAULT_SETTINGS.point
         Addon.db.settings.relPoint = DEFAULT_SETTINGS.relPoint
         Addon.db.settings.posX     = DEFAULT_SETTINGS.posX
         Addon.db.settings.posY     = DEFAULT_SETTINGS.posY
         Addon:PositionFrame()
-        print("|cff00ccff[DaseekiBT]|r Frame position reset.")
+        print(Addon:Tag("[DaseekiBT]") .. " Frame position reset.")
     else
-        print("|cff00ccff[DaseekiBT]|r /dbt [options|toggle|lock|reset]")
+        print(Addon:Tag("[DaseekiBT]") .. " /dbt [options|toggle|lock|reset]")
     end
 end

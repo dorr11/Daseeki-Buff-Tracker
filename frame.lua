@@ -200,7 +200,8 @@ local function MakeIcon(index, parent)
     btn.tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
     btn.countText = btn:CreateFontString(nil, "OVERLAY")
-    btn.countText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE")
+    btn.countText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE")   -- fallback face (no Core)
+    Addon:TrySetNumeral(btn.countText)   -- HUD duration → ARIALN+OUTLINE numeral when Core present (BRAND_SPEC §3); explicit SetTextColor below keeps the countdown white
     btn.countText:SetPoint("CENTER", btn, "CENTER", 0, 0)
     btn.countText:SetJustifyH("CENTER")
 

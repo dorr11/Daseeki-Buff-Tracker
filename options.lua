@@ -755,7 +755,7 @@ function Addon:RefreshItemList()
             elseif item.actionType == "macro" then row.actionText:SetText("Macro")
             else row.actionText:SetText("Item") end
         elseif not item.clickable then
-            row.actionText:SetText("passive")
+            row.actionText:SetText("Passive")
         elseif item.actionType == "macro" then
             row.actionText:SetText("Macro")
         else
@@ -869,7 +869,7 @@ function Addon:BuildOptions(flow)
         ShowNameInputDialog("New Profile", "", function(name)
             local ok, err = Addon:CreateProfile(name)
             if ok then bt.selectedProfileName = name; RefreshProfiles(); Addon:RefreshItemList()
-            else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
+            else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", err or "Error")) end
         end)
     end })
     crud1:Button({ text = "Clone", width = MGMT_BTN, onClick = function()
@@ -877,7 +877,7 @@ function Addon:BuildOptions(flow)
         ShowNameInputDialog("Clone Profile", s .. " Copy", function(name)
             local ok, err = Addon:CloneProfile(s, name)
             if ok then bt.selectedProfileName = name; RefreshProfiles(); Addon:RefreshItemList()
-            else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
+            else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", err or "Error")) end
         end)
     end })
     local crud2 = L:AddRow()
@@ -886,14 +886,14 @@ function Addon:BuildOptions(flow)
         ShowNameInputDialog("Rename Profile", s, function(name)
             local ok, err = Addon:RenameProfile(s, name)
             if ok then bt.selectedProfileName = name; RefreshProfiles(); Addon:RefreshItemList()
-            else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
+            else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", err or "Error")) end
         end)
     end })
     crud2:Button({ text = "Delete", width = MGMT_BTN, variant = "danger", onClick = function()
         local s = bt.selectedProfileName; if not s then return end
         local ok, err = Addon:DeleteProfile(s)
         if ok then bt.selectedProfileName = Addon:GetActiveProfile(); RefreshProfiles(); Addon:RefreshItemList()
-        else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
+        else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", err or "Error")) end
     end })
 
     -- Set Active spans the full grid width; Export / Import as a matching 2-up row.
@@ -907,15 +907,15 @@ function Addon:BuildOptions(flow)
         local s = bt.selectedProfileName; if not s then return end
         local str, err = Addon:ExportProfile(s)
         if str then ShowTextDialog("Export: " .. s, str, true)
-        else print("|cffff4444[DaseekiBT]|r " .. (err or "Error")) end
+        else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", err or "Error")) end
     end })
     pio:Button({ text = "Import", width = MGMT_BTN, onClick = function()
         ShowTextDialog("Import Profile (paste string below)", "", false, function(txt)
             local ok, result = Addon:ImportProfile(txt)
             if ok then
-                print("|cff00ccff[DaseekiBT]|r Imported: " .. result)
+                print(Addon:Tag("[DaseekiBT]") .. " Imported: " .. result)
                 bt.selectedProfileName = result; RefreshProfiles(); Addon:RefreshItemList()
-            else print("|cffff4444[DaseekiBT]|r Import failed: " .. (result or "?")) end
+            else print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", "Import failed: " .. (result or "?"))) end
         end)
     end })
 
@@ -1034,7 +1034,7 @@ function Addon:BuildOptions(flow)
 
     R:AddRow():Button({ text = "Add Buff", width = 90, onClick = function()
         local sel = bt.selectedProfileName
-        if not sel then print("|cffff4444[DaseekiBT]|r Select a profile first"); return end
+        if not sel then print(Addon:Tag("[DaseekiBT]") .. " " .. Addon:Wrap("danger", "Select a profile first")); return end
         local blank = {
             buffNames = {}, displayName = "New Entry",
             clickable = true, actionType = "item", itemID = 0,
@@ -1120,7 +1120,7 @@ end
 function Addon:RegisterOptions()
     if not _G.DaseekiSuite then return end
     if not (_G.DaseekiUI and _G.DaseekiUI.Token) then
-        print("|cff00ccffDaseeki Buff Tracker|r requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
+        print(Addon:Tag("Daseeki Buff Tracker") .. " requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
         return
     end
     DaseekiSuite:RegisterAddon({
