@@ -2,6 +2,7 @@
 ## Title: Daseeki Buff Tracker
 ## Notes: Customizable buff and consumable tracker with class profiles
 ## Author: Daseeki
+## X-License: All Rights Reserved
 ## X-Curse-Project-ID: 1592411
 ## SavedVariables: DaseekiCTDB
 ## OptionalDeps: Daseeki-Core

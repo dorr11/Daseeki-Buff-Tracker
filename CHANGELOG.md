@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Changed: Daseeki Buff Tracker is now licensed **All Rights Reserved** rather than MIT, matching the rest of the suite. This rides the next release — 2.1.1 was published to CurseForge with the MIT file still in place.
+
 ## 2.1.1 — 2026-08-03
 - **Your profiles and settings will survive future updates.** Buff Tracker used to
   clear its saved profiles whenever its internal data version changed — so the next
