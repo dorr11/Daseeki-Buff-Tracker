@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (internal)
+- Config now migrates in place across future updates instead of resetting.
+
 ## 2.1.0
 - Settings rebuilt on the new Daseeki Core 2.0 interface (requires Daseeki Core 2.0.0+).
 - Two-pane layout: profiles and frame settings on the left, tracked-buff list and buff

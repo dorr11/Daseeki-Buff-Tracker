@@ -68,20 +68,60 @@ function Addon:DeepCopy(orig)
     return copy
 end
 
-local DB_VERSION = 3  -- bump to force profile reset when data model changes
+local DB_VERSION = 3  -- current data-model version; migrations transform in place, never wipe
+
+-- ── SavedVariables migration chain ───────────────────────────────────────────────
+-- Stamp-don't-wipe, generalized from the suite template (Daseeki-ClassHUD store.lua
+-- Store.Migrate). The next DB_VERSION bump must TRANSFORM a player's saved data, not
+-- erase it. MIGRATIONS[n] upgrades a db stamped dbVersion n up to n+1, in place.
+--
+-- It is EMPTY today on purpose: every existing user is already at v3 with v3-shaped
+-- data, so the chain is a no-op. The runner exists now so the FIRST real data-model
+-- change is a transform step here, not the old profile wipe. Note the unconditional
+-- BUFF_RENAMES / Mageblood-spellID / cachedIcon healing pass further down in Init()
+-- already repairs old-shaped item entries on every login — which is exactly why
+-- stamping an unknown version to current WITHOUT converting is safe.
+--
+-- RENAME-AND-PARK: if a future model change is ever genuinely unconvertible, a
+-- migration step must PARK the old table (e.g. db.profiles_v3 = db.profiles) rather
+-- than nil it — the data stays recoverable. Never reintroduce a destructive wipe.
+Addon.MIGRATIONS = {}
+
+-- Migrate db in place. Returns true when it is safe to proceed onto seeding.
+--   absent/unknown dbVersion -> stamp to current, convert nothing (seeding fills gaps)
+--   dbVersion NEWER than this build -> leave EXACTLY as-is (never downgrade), report
+--   dbVersion OLDER -> run MIGRATIONS steps in order; a MISSING step STOPS and leaves
+--                      the data untouched (reported) rather than wiping it.
+function Addon:MigrateDB(db)
+    local from = tonumber(db.dbVersion)
+    if from == nil then
+        db.dbVersion = DB_VERSION
+        return true
+    end
+    if from > DB_VERSION then
+        print(Addon:Tag("[DaseekiBT]") .. " settings were saved by a newer version; left untouched.")
+        return false
+    end
+    while (db.dbVersion or 0) < DB_VERSION do
+        local step = Addon.MIGRATIONS[db.dbVersion]
+        if not step then
+            print(Addon:Tag("[DaseekiBT]") .. " settings could not be upgraded from v"
+                .. tostring(db.dbVersion) .. "; left untouched.")
+            return false
+        end
+        step(db)
+        db.dbVersion = db.dbVersion + 1
+    end
+    return true
+end
 
 function Addon:Init()
     DaseekiCTDB = DaseekiCTDB or {}
     local db = DaseekiCTDB
 
-    -- Wipe profiles when the data model has been updated
-    if (db.dbVersion or 1) < DB_VERSION then
-        db.profiles       = nil
-        db.charProfiles   = nil
-        db.charInitialized = nil
-        db.dbVersion      = DB_VERSION
-        print(Addon:Tag("[DaseekiBT]") .. " Profiles reset for v3 multi-buff model.")
-    end
+    -- Migrate saved data in place before seeding. Never wipes: an unknown version is
+    -- stamped, an older one is transformed step-by-step, a newer one is left as-is.
+    Addon:MigrateDB(db)
 
     if not db.settings then db.settings = {} end
     for k, v in pairs(DEFAULT_SETTINGS) do
