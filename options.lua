@@ -1117,8 +1117,32 @@ end
 -- `flow = true` opts this addon into the new DaseekiUI flow renderer
 -- (Core now defaults registrations to the legacy raw-panel path).
 -- ============================================================
+-- VERSION GUARD. This used to be a hand-rolled sentence built from a capability
+-- probe; it predates DaseekiSuite.RequireCore, the suite-wide guard Core 2.2.0
+-- added, so it could not name the version actually installed and its wording
+-- drifted from every other addon's. It now asks Core.
+--
+-- 2.0.0 is the honest minimum, not a round number: this page uses only the
+-- DaseekiUI surface that shipped IN 2.0.0 — the flow renderer (`flow = true`,
+-- flow:AddRow, flow.pane:AddBlock), UI.Color/Skin/fonts, UI.CreateColumn,
+-- UI.FlatFrame, UI.MakeButton/MakeSegmented/MakeEditorCard,
+-- DaseekiUI.ForwardWheelToPane and DaseekiUI.Token. Nothing here reaches for the
+-- 2.2.0 ledger kit (UI.Hairline and friends), so requiring 2.2.0 would switch the
+-- page off for a Core that runs it perfectly well.
+--
+-- RequireCore is TYPE-GUARDED because a Core old enough to fail this check is
+-- also old enough to lack the guard itself (the Nexus ns:CoreAPI precedent). When
+-- Core cannot answer we fall through to the DaseekiUI.Token capability probe,
+-- which is the last word in both directions: a Core too old to have RequireCore
+-- has no version to compare, and a Core that reports new enough but is missing
+-- the toolkit is still not safe to build against.
 function Addon:RegisterOptions()
-    if not _G.DaseekiSuite then return end
+    local Suite = _G.DaseekiSuite
+    if not Suite then return end
+    if type(Suite.RequireCore) == "function" then
+        local ok, passed = pcall(Suite.RequireCore, "2.0.0", "the Buff Tracker settings page")
+        if ok and not passed then return end   -- Core printed the explanatory line itself
+    end
     if not (_G.DaseekiUI and _G.DaseekiUI.Token) then
         print(Addon:Tag("Daseeki Buff Tracker") .. " requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
         return

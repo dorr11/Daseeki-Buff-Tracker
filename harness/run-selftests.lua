@@ -15,6 +15,9 @@
 --   FW       FIREWALL    no third-party addon identifier in the repo's text.
 --   MIG-ALGO migration runner: stamp / newer-left / transform / GAP-NOT-WIPE.
 --   MIG-INIT integration: real Addon:Init() preserves pre-existing profiles.
+--   CORE-GUARD RegisterOptions routes its version check through
+--            DaseekiSuite.RequireCore("2.0.0") and degrades safely on an
+--            older Core that has no such guard.
 --
 -- Usage:  lua5.1 run-selftests.lua [BT_DIR]   (exit 0 = ALL PASS)
 -- =====================================================================
@@ -235,12 +238,111 @@ end
 realprint("=== GATE MIG-INIT: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n")
 
 ----------------------------------------------------------------------
+-- GATE CORE-GUARD: Addon:RegisterOptions asks Core for the version.
+--
+-- The settings page used to hand-roll "requires Daseeki Core v2.0.0" out of a
+-- capability probe alone, so it could never name the version a player actually
+-- had. It now calls DaseekiSuite.RequireCore("2.0.0", ...) — the suite-wide guard
+-- Core 2.2.0 introduced — TYPE-GUARDED, because a Core old enough to fail the
+-- check is also old enough to lack the guard itself. Drive the real function
+-- through every state a player can be in.
+--
+-- Loading options.lua LAST is deliberate: it must not perturb the migration
+-- gates above, and RegisterAddon is stubbed so no pane is ever built.
+----------------------------------------------------------------------
+realprint("=== GATE CORE-GUARD: RegisterOptions version guard ===")
+do
+    local chunk, err = loadfile(P("options.lua"))
+    if not chunk then
+        fail("loadfile options.lua -> " .. tostring(err))
+    else
+        local loaded, lerr = pcall(chunk, ADDON_NAME, Addon)
+        ck(loaded, "options.lua loads" .. (loaded and "" or (" -> " .. tostring(lerr))))
+        ck(type(Addon.RegisterOptions) == "function", "Addon:RegisterOptions is defined")
+    end
+
+    -- Recording print, so we can assert WHO speaks in each state.
+    local said = {}
+    local swallow = _G.print
+    _G.print = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+        said[#said + 1] = table.concat(parts, " ")
+    end
+
+    local asked          -- { minVersion, caller } captured from RequireCore
+    local registered     -- the def table RegisterAddon received
+
+    -- opts.requireCore: nil = Core predates the guard | true/false = its verdict
+    --                   "raise" = a Core whose guard errors
+    -- opts.ui:          truthy = DaseekiUI with a Token (the 2.0.0 toolkit present)
+    local function scenario(opts)
+        asked, registered, said = nil, nil, {}
+        _G.DaseekiUI = opts.ui and { Token = function() end } or nil
+        if opts.suite == false then
+            _G.DaseekiSuite = nil
+        else
+            local S = { RegisterAddon = function(_, def) registered = def end }
+            if opts.requireCore ~= nil then
+                S.RequireCore = function(minVersion, caller)
+                    if opts.requireCore == "raise" then error("simulated stale-Core blowup") end
+                    asked = { min = minVersion, caller = caller }
+                    return opts.requireCore
+                end
+            end
+            _G.DaseekiSuite = S
+        end
+        return pcall(function() Addon:RegisterOptions() end)
+    end
+
+    -- (a) No Core at all: silent no-op, never an error.
+    local okRun = scenario({ suite = false })
+    ck(okRun, "(a) no DaseekiSuite: does not raise")
+    ck(registered == nil, "(a) no DaseekiSuite: nothing registered")
+
+    -- (b) Modern Core that is TOO OLD: Core owns the message, we just stand down.
+    okRun = scenario({ requireCore = false, ui = true })
+    ck(okRun, "(b) stale Core: does not raise")
+    ck(registered == nil, "(b) stale Core: page not registered")
+    ck(#said == 0, "(b) stale Core: no duplicate line — Core already spoke")
+
+    -- (c) Modern Core, guard satisfied: the page registers, and it asks for
+    --     EXACTLY 2.0.0. This is the anti-inflation pin: nothing on this page
+    --     touches the 2.2.0 ledger kit, so requiring 2.2.0 would switch it off
+    --     for a Core that runs it perfectly well.
+    okRun = scenario({ requireCore = true, ui = true })
+    ck(okRun, "(c) current Core: does not raise")
+    ck(registered ~= nil and registered.id == "bufftracker", "(c) current Core: page registered")
+    ck(asked ~= nil and asked.min == "2.0.0", "(c) minimum asked for is 2.0.0, not inflated")
+    ck(asked ~= nil and type(asked.caller) == "string" and asked.caller ~= "",
+       "(c) a caller label is passed so Core's line names the feature")
+
+    -- (d) Core PREDATES RequireCore and the toolkit is absent: the capability
+    --     probe is the last word and we say it ourselves, once.
+    okRun = scenario({ requireCore = nil, ui = false })
+    ck(okRun, "(d) pre-RequireCore Core, no DaseekiUI: does not raise")
+    ck(registered == nil, "(d) pre-RequireCore Core, no DaseekiUI: page not registered")
+    ck(#said == 1, "(d) pre-RequireCore Core: the addon speaks once (Core cannot)")
+
+    -- (e) A Core whose guard ERRORS must not take the addon down with it; the
+    --     probe still decides. RequireCore is called through pcall for this.
+    okRun = scenario({ requireCore = "raise", ui = true })
+    ck(okRun, "(e) erroring RequireCore: does not raise")
+    ck(registered ~= nil, "(e) erroring RequireCore: falls through to the probe and registers")
+
+    _G.print = swallow
+    _G.DaseekiSuite, _G.DaseekiUI = nil, nil
+end
+realprint("=== GATE CORE-GUARD: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n")
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Buff-Tracker migration self-tests")
 realprint("#   GATE 0        toc parse          : PASS")
 realprint("#   GATE FW       clean-room firewall : PASS")
 realprint("#   GATE MIG-ALGO migration runner   : " .. (FAILS == 0 and "PASS" or "FAIL"))
 realprint("#   GATE MIG-INIT real Init()        : " .. (FAILS == 0 and "PASS" or "FAIL"))
+realprint("#   GATE CORE-GUARD RequireCore      : " .. (FAILS == 0 and "PASS" or "FAIL"))
 realprint("#")
 realprint("#   RESULT: " .. (FAILS == 0 and "ALL PASS" or (FAILS .. " FAILURE(S) — RED")))
 realprint("############################################################")
