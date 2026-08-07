@@ -40,6 +40,75 @@ function Addon:TrySetNumeral(fs)
     return false
 end
 
+-- ── Tracked-buff reorder drag: which slot is the cursor pointing at? ──────────
+--
+-- PURE arithmetic, no WoW API, so the harness drives the REAL function. It lives
+-- here rather than in options.lua for the same reason MigrateDB does: main.lua is
+-- the file the harness loads and drives, options.lua is a frame-construction file
+-- it loads last and only to prove the version guard.
+--
+-- TWO COORDINATE SPACES MEET IN A REORDER DRAG, and mixing them is the defect
+-- this seam exists to end:
+--
+--   GetCursorPosition()          -> RAW screen units, no scale applied.
+--   Frame:GetTop()/GetBottom()   -> the FRAME'S OWN effective-scale space.
+--
+-- A cursor Y may therefore only be compared against a frame's edges after
+-- dividing it by THAT frame's effective scale. The tracked-buff list used to
+-- divide by UIParent's instead, which agrees only while the list's effective
+-- scale happens to equal UIParent's. Nothing scales the options pane today, so
+-- the two spaces coincide and the bug is invisible — but the moment anything in
+-- the chain from UIParent down to the scroll child takes a SetScale (a list-scale
+-- slider, a themed pane scale, a Core window scale), the comparison reads the
+-- cursor as (listScale x) its true height above the screen's bottom edge. That
+-- error is PROPORTIONAL to height, not a constant offset, so the drop bar would
+-- drift further from the pointer the higher up the list you dragged.
+-- Daseeki-Raid-Prep shipped exactly this shape and a player hit it the week a
+-- List Scale slider landed (Raid Prep 1.3.1); this is the same defect, fixed
+-- before it can bite. NOTE that the HUD's own settings.scale is a different
+-- frame entirely (frame.lua) and never touched this list — do not be reassured
+-- by that when adding a scale control to the options pane.
+--
+-- Every row shares one parent — the scroll child — so ONE conversion covers the
+-- whole list, which is why the seam takes a single `listScale`.
+--
+-- Pure inputs: `childTop` is the scroll child's GetTop() in the LIST's own
+-- space; `rowH` the row pitch (also list space); `count` how many rows are in
+-- play; `cursorY` the RAW GetCursorPosition() Y; `listScale` the scroll child's
+-- effective scale. Returns the insertion line, 1..count+1 (count+1 = "after the
+-- last row"), always a whole number, never nil.
+function Addon.ComputeDropLine(childTop, rowH, count, cursorY, listScale)
+    count = tonumber(count)
+    count = count and math.floor(count) or 0
+    if count < 1 then return 1 end
+
+    childTop, cursorY, rowH = tonumber(childTop), tonumber(cursorY), tonumber(rowH)
+    -- An unlaid-out list, a cursor the client has not reported yet, or a zero row
+    -- pitch: answer "the head" rather than divide by zero or return nil into an
+    -- arithmetic caller.
+    if not childTop or not cursorY or not rowH or rowH <= 0 then return 1 end
+
+    -- A scale is never 0 or negative in a live client; refuse to divide by one
+    -- anyway rather than propagate an inf/NaN into the comparison.
+    listScale = tonumber(listScale)
+    if not listScale or listScale <= 0 then listScale = 1 end
+
+    local y    = cursorY / listScale     -- the cursor, in the LIST's space
+    local relY = childTop - y            -- how far below the list's top edge
+    local hRow = math.floor(relY / rowH) -- rows fully above the cursor
+    local frac = relY - hRow * rowH      -- how far into the row under the cursor
+
+    -- Upper half of a row inserts BEFORE it, lower half AFTER it. The comparison
+    -- is strict, so a cursor exactly on a row's midpoint resolves one way only and
+    -- the drop bar cannot flicker between two slots.
+    local line = (frac < rowH / 2) and (hRow + 1) or (hRow + 2)
+
+    if line ~= line then return 1 end    -- NaN in (inf - inf), never out
+    if line < 1 then return 1 end
+    if line > count + 1 then return count + 1 end
+    return line
+end
+
 local DEFAULT_SETTINGS = {
     locked         = false,
     scale          = 1.0,

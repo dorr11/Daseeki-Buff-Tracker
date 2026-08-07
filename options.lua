@@ -184,9 +184,16 @@ local function BuildBuffList(flow)
     bt._dragTick = dragTick
     dragTick:SetScript("OnUpdate", function()
         if not bt._dragSourceIdx then dragTick:Hide(); return end
-        local mx, my = GetCursorPosition()
-        local scale  = UIParent:GetEffectiveScale()
-        mx, my = mx / scale, my / scale
+        local cx, cy = GetCursorPosition()
+
+        -- UIParent's space is the right one HERE and only here: the movement
+        -- threshold below is a SCREEN gesture ("has the mouse moved far enough to
+        -- mean a drag?"), and the anchor it is measured against was captured in
+        -- this same space in the row's OnMouseDown. Both sides must agree; neither
+        -- may reach the hit-test, which lives in the LIST's space.
+        local uiScale = UIParent:GetEffectiveScale()
+        if not uiScale or uiScale <= 0 then uiScale = 1 end
+        local uiMX, uiMY = cx / uiScale, cy / uiScale
 
         if not IsMouseButtonDown("LeftButton") then
             dragTick:Hide(); dropBar:Hide()
@@ -209,7 +216,7 @@ local function BuildBuffList(flow)
         end
 
         if not bt._dragging then
-            local dx, dy = mx - (bt._dragClickX or mx), my - (bt._dragClickY or my)
+            local dx, dy = uiMX - (bt._dragClickX or uiMX), uiMY - (bt._dragClickY or uiMY)
             if dx * dx + dy * dy < 25 then return end
             bt._dragging = true
         end
@@ -221,11 +228,12 @@ local function BuildBuffList(flow)
         local n = prof and prof.items and #prof.items or 0
         if n == 0 then return end
 
-        local relY = childTop - my
-        local hRow = math.floor(relY / BUFF_ROW_H)
-        local frac = relY - hRow * BUFF_ROW_H
-        local line = (frac < BUFF_ROW_H / 2) and (hRow + 1) or (hRow + 2)
-        bt._dragDropLine = math.max(1, math.min(n + 1, line))
+        -- A DIFFERENT SPACE: child:GetTop() and BUFF_ROW_H are both expressed in
+        -- the scroll child's own effective scale, so the RAW cursor is converted
+        -- with the CHILD's scale — never with uiMY above. See Addon.ComputeDropLine
+        -- in main.lua for why the two must not be mixed.
+        local listScale = child:GetEffectiveScale()
+        bt._dragDropLine = Addon.ComputeDropLine(childTop, BUFF_ROW_H, n, cy, listScale)
 
         dropBar:ClearAllPoints()
         dropBar:SetPoint("TOPLEFT",  child, "TOPLEFT",  0, -(bt._dragDropLine - 1) * BUFF_ROW_H)
@@ -734,9 +742,14 @@ function Addon:RefreshItemList()
         row:SetScript("OnMouseDown", function(self, btn2)
             if btn2 ~= "LeftButton" then return end
             bt._dragSourceIdx = ci; bt._dragging = false
-            local mx, my = GetCursorPosition()
-            local sc = UIParent:GetEffectiveScale()
-            bt._dragClickX, bt._dragClickY = mx / sc, my / sc
+            -- UIPARENT SPACE, deliberately, and the ticker's threshold reads it
+            -- back in the SAME space (see BuildBuffList). This anchor only ever
+            -- answers "did the mouse move 5px?" — it is not a hit-test, so it must
+            -- NOT be converted with the list's scale.
+            local cx, cy = GetCursorPosition()
+            local uiScale = UIParent:GetEffectiveScale()
+            if not uiScale or uiScale <= 0 then uiScale = 1 end
+            bt._dragClickX, bt._dragClickY = cx / uiScale, cy / uiScale
             if bt._dragTick then bt._dragTick:Show() end
         end)
 

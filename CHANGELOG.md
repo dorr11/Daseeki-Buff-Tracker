@@ -4,6 +4,17 @@
 
 - Changed: Daseeki Buff Tracker is now licensed **All Rights Reserved** rather than MIT, matching the rest of the suite. This rides the next release — 2.1.1 was published to CurseForge with the MIT file still in place.
 - Changed: if your Daseeki Core is too old for the Buff Tracker settings page, the message now tells you which version you actually have installed, in the same wording every Daseeki addon uses.
+- Fixed: dragging a tracked buff to reorder it will keep dropping where you point, whatever
+  the settings window is scaled to. Nothing changes for you today — at the scale every
+  install runs at right now, the drop bar already sits under the pointer, and it still will.
+  This is a repair to the arithmetic behind it, made before it could ever be seen. The window
+  measured your cursor against the list using the **screen's** scale rather than the **list's**;
+  those are the same number today, so the sum came out right, but they stop being the same the
+  moment anything above the list is scaled — and then the error is not a fixed few pixels, it
+  grows the further up the list you drag, so the bar drifts away from the mouse and buffs land
+  several rows from where the bar said they would. Daseeki Raid Prep shipped this exact shape
+  and a player hit it the week a list-scale slider arrived. The cursor is now measured against
+  the list at the list's own scale, so the answer is right at any scale, including yours.
 
 ## 2.1.1 — 2026-08-03
 - **Your profiles and settings will survive future updates.** Buff Tracker used to

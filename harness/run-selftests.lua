@@ -18,6 +18,10 @@
 --   CORE-GUARD RegisterOptions routes its version check through
 --            DaseekiSuite.RequireCore("2.0.0") and degrades safely on an
 --            older Core that has no such guard.
+--   DRAG     tracked-buff reorder hit-test: the cursor is compared in the
+--            LIST'S coordinate space, so a scaled options pane can no longer
+--            drift the drop bar away from the pointer (the shipped 2.1.1
+--            arithmetic is kept as a red control).
 --
 -- Usage:  lua5.1 run-selftests.lua [BT_DIR]   (exit 0 = ALL PASS)
 -- =====================================================================
@@ -37,6 +41,20 @@ local FAILS = 0
 local function fail(m) FAILS = FAILS + 1; realprint("  FAIL  " .. m) end
 local function ok(m)   realprint("  ok    " .. m) end
 local function ck(cond, m) if cond then ok(m) else fail(m) end end
+
+-- Per-gate verdict, taken from the DELTA in FAILS across the gate rather than
+-- from the running total (the Daseeki-Raid-Prep harness pattern). Every gate
+-- below used to print `FAILS == 0`, so one failure anywhere reported every LATER
+-- gate as FAIL too — a green gate could be accused of a red one's failure, and
+-- the summary block named the wrong culprit. The checks themselves were always
+-- honest; only the attribution was not.
+local GATE_MARK = 0
+local function gateBegin(title) GATE_MARK = FAILS; realprint("=== " .. title .. " ===") end
+local function gateEnd(name)
+    local verdict = (FAILS == GATE_MARK) and "PASS" or "FAIL"
+    realprint("=== GATE " .. name .. ": " .. verdict .. " ===\n")
+    return verdict
+end
 
 local function readFile(path)
     local fh = io.open(path, "r"); if not fh then return nil end
@@ -59,7 +77,7 @@ local function readTocLuaFiles(tocPath)
     return out
 end
 
-realprint("=== GATE 0: toc parse (loadfile every .lua in " .. TOC_FILE .. ") ===")
+gateBegin("GATE 0: toc parse (loadfile every .lua in " .. TOC_FILE .. ")")
 local TOC_LUA = readTocLuaFiles(P(TOC_FILE))
 if not TOC_LUA or #TOC_LUA == 0 then realprint("  FAIL  cannot read .toc lua list"); os.exit(1) end
 for _, rel in ipairs(TOC_LUA) do
@@ -67,7 +85,7 @@ for _, rel in ipairs(TOC_LUA) do
     if chunk then ok("parse " .. rel) else fail("parse " .. rel .. " -> " .. tostring(err)) end
 end
 if FAILS > 0 then realprint("=== GATE 0: FAIL (a file does not compile) ==="); os.exit(1) end
-realprint("=== GATE 0: PASS ===\n")
+local V_TOC = gateEnd("0")
 
 ----------------------------------------------------------------------
 -- GATE FW: CLEAN-ROOM FIREWALL
@@ -91,7 +109,7 @@ local FORBIDDEN = {
 local FW_ALLOW = {
     ["frame.lua"] = { druidbar = true, weakauras = true },
 }
-realprint("=== GATE FW: clean-room firewall ===")
+gateBegin("GATE FW: clean-room firewall")
 local FW_FILES = { "CHANGELOG.md", "README.md", TOC_FILE, ".pkgmeta" }
 for _, rel in ipairs(TOC_LUA) do FW_FILES[#FW_FILES + 1] = rel end
 for _, rel in ipairs(FW_FILES) do
@@ -115,7 +133,7 @@ for _, rel in ipairs(FW_FILES) do
     end
 end
 if FAILS > 0 then realprint("=== GATE FW: FAIL ==="); os.exit(1) end
-realprint("=== GATE FW: PASS ===\n")
+local V_FW = gateEnd("FW")
 
 ----------------------------------------------------------------------
 -- Minimal WoW stub — only what main.lua touches at LOAD and in Init().
@@ -154,7 +172,7 @@ Addon.ClassDefaults = {}
 ----------------------------------------------------------------------
 -- GATE MIG-ALGO: drive the REAL Addon:MigrateDB directly.
 ----------------------------------------------------------------------
-realprint("=== GATE MIG-ALGO: Addon:MigrateDB (stamp / newer / transform / gap-not-wipe) ===")
+gateBegin("GATE MIG-ALGO: Addon:MigrateDB (stamp / newer / transform / gap-not-wipe)")
 
 -- (a) absent dbVersion -> stamp to 3, convert nothing, sentinel survives.
 do
@@ -206,13 +224,13 @@ do
     ck(db.charInitialized ~= nil and db.charInitialized["Toon-Realm"] == true,
        "(d) db.charInitialized NOT wiped")
 end
-realprint("=== GATE MIG-ALGO: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n")
+local V_ALGO = gateEnd("MIG-ALGO")
 
 ----------------------------------------------------------------------
 -- GATE MIG-INIT: drive the REAL Addon:Init() end to end.
 -- A user sitting at v2 with real profiles must keep them across Init().
 ----------------------------------------------------------------------
-realprint("=== GATE MIG-INIT: real Addon:Init() preserves pre-existing data ===")
+gateBegin("GATE MIG-INIT: real Addon:Init() preserves pre-existing data")
 do
     _G.DaseekiCTDB = {
         dbVersion       = 2,  -- pre-bump user
@@ -235,7 +253,7 @@ do
     ck(db.profiles.WARRIOR.items[1].buffName == "Elixir of the Mongoose",
        "existing per-item healing pass still applied (Mongoose renamed)")
 end
-realprint("=== GATE MIG-INIT: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n")
+local V_INIT = gateEnd("MIG-INIT")
 
 ----------------------------------------------------------------------
 -- GATE CORE-GUARD: Addon:RegisterOptions asks Core for the version.
@@ -250,7 +268,7 @@ realprint("=== GATE MIG-INIT: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n"
 -- Loading options.lua LAST is deliberate: it must not perturb the migration
 -- gates above, and RegisterAddon is stubbed so no pane is ever built.
 ----------------------------------------------------------------------
-realprint("=== GATE CORE-GUARD: RegisterOptions version guard ===")
+gateBegin("GATE CORE-GUARD: RegisterOptions version guard")
 do
     local chunk, err = loadfile(P("options.lua"))
     if not chunk then
@@ -333,16 +351,261 @@ do
     _G.print = swallow
     _G.DaseekiSuite, _G.DaseekiUI = nil, nil
 end
-realprint("=== GATE CORE-GUARD: " .. (FAILS == 0 and "PASS" or "FAIL") .. " ===\n")
+local V_GUARD = gateEnd("CORE-GUARD")
+
+----------------------------------------------------------------------
+-- GATE DRAG: tracked-buff reorder hit-test across scale combinations.
+--
+-- GetCursorPosition() returns RAW screen units; child:GetTop() returns in the
+-- scroll child's OWN effective-scale space. The shipped ticker divided the cursor
+-- by UIParent's scale and compared the result against child:GetTop() and
+-- BUFF_ROW_H, which agrees only while the list's effective scale equals
+-- UIParent's.
+--
+-- Nothing scales the Buff Tracker options pane today, so this was LATENT here —
+-- but it is byte-for-byte the shape that broke live in Daseeki-Raid-Prep the week
+-- a "List Scale" slider gave the row chain a SetScale (fixed in Raid Prep 1.3.1,
+-- reported by a player with a screenshot). The error is PROPORTIONAL to height
+-- above the screen's bottom edge, not a constant offset, so the drop bar drifts
+-- further the higher up the list you drag.
+--
+-- The arithmetic lives as a pure seam, Addon.ComputeDropLine in main.lua — the
+-- file this harness loads and drives, following the MigrateDB precedent, with
+-- options.lua left as the frame-construction file it is. The REAL function is
+-- driven below against the SHIPPED 2.1.1 arithmetic kept here as a RED CONTROL,
+-- so these checks demonstrate the defect rather than merely assert the fix.
+----------------------------------------------------------------------
+gateBegin("GATE DRAG: reorder hit-test under list / UI scale divergence")
+
+local V_DRAG
+do
+    ck(type(Addon.ComputeDropLine) == "function",
+       "(a) Addon.ComputeDropLine published as a pure seam")
+
+    local DropLine = Addon.ComputeDropLine
+    local ROW_H = 30            -- BUFF_ROW_H
+    local TOP   = 500           -- child:GetTop() in the LIST's own space
+
+    -- The SHIPPED 2.1.1 arithmetic, verbatim in spirit: cursor converted with
+    -- UIParent's scale, compared against a list-space top edge.
+    local function oldDropLine(childTop, rowH, count, cursorY, uiScale)
+        local my   = cursorY / uiScale
+        local relY = childTop - my
+        local hRow = math.floor(relY / rowH)
+        local frac = relY - hRow * rowH
+        local line = (frac < rowH / 2) and (hRow + 1) or (hRow + 2)
+        return math.max(1, math.min(count + 1, line))
+    end
+
+    -- What the player is pointing at, derived from the GEOMETRY rather than from
+    -- the implementation: rows run downward from childTop at rowH pitch, and the
+    -- half of a row the cursor is in decides before/after.
+    local function expected(childTop, rowH, count, listSpaceY)
+        local relY = childTop - listSpaceY
+        local hRow = math.floor(relY / rowH)
+        local line = (relY - hRow * rowH < rowH / 2) and (hRow + 1) or (hRow + 2)
+        return math.max(1, math.min(count + 1, line))
+    end
+
+    -- The client's raw cursor Y for a point the player SEES at `listSpaceY`.
+    local function rawFor(listSpaceY, uiScale, paneScale) return listSpaceY * uiScale * paneScale end
+
+    -- THE IEEE754 SAMPLING TRAP (documented in Raid Prep's GATE DRAG): the sweeps
+    -- below step in list space from a HALF-INTEGER offset. Row midpoints sit at
+    -- integer list-space heights (TOP - 15 - 30k), so a half-integer sample can
+    -- never land on one. Sitting exactly on a boundary would make a
+    -- multiply-then-divide round trip decide the strict `<` on the last bit of a
+    -- float — that tests IEEE754, not the hit-test. The boundary itself is pinned
+    -- separately in (g), at scale 1, where the round trip is exact.
+    local function sweepNew(ui, pane, count, childTop)
+        local bad = 0
+        for k = 0, 79 do
+            local y = childTop - (0.5 + 3 * k)
+            if DropLine(childTop, ROW_H, count, rawFor(y, ui, pane), ui * pane)
+               ~= expected(childTop, ROW_H, count, y) then bad = bad + 1 end
+        end
+        return bad
+    end
+    local function sweepOld(ui, pane, count, childTop)
+        local bad = 0
+        for k = 0, 79 do
+            local y = childTop - (0.5 + 3 * k)
+            if oldDropLine(childTop, ROW_H, count, rawFor(y, ui, pane), ui)
+               ~= expected(childTop, ROW_H, count, y) then bad = bad + 1 end
+        end
+        return bad
+    end
+
+    -- (b) BASELINE — everything at parity, which is every Buff Tracker install
+    --     TODAY. Old and new must AGREE here, or the fix would be a regression for
+    --     the untouched majority. This is the "nothing changed at scale 1" pin.
+    ck(sweepNew(1.0, 1.0, 6, TOP) == 0,
+       "(b) scale 1 everywhere: every sampled cursor lands on the slot it is over")
+    ck(sweepOld(1.0, 1.0, 6, TOP) == 0,
+       "(b) at parity the OLD math was right too — this fix changes NOTHING today")
+    do
+        local same = true
+        for k = 0, 79 do
+            local y = TOP - (0.5 + 3 * k)
+            if DropLine(TOP, ROW_H, 6, y, 1.0) ~= oldDropLine(TOP, ROW_H, 6, y, 1.0) then same = false end
+        end
+        ck(same, "(b) old and new are the SAME function at scale 1 — a latent fix, not a behaviour change")
+    end
+
+    -- (c) THE LATENT DEFECT — the list chain takes a 0.8 SetScale. The old math
+    --     must be visibly WRONG here; that is the whole point of keeping it.
+    do
+        local y    = TOP - 75.5                 -- row 3's lower half at a 30px pitch
+        local raw  = rawFor(y, 1.0, 0.8)
+        local want = expected(TOP, ROW_H, 6, y)
+        ck(want == 4, "(c) fixture sanity: 75.5px down a 30px pitch is row 3's lower half -> line 4")
+        ck(DropLine(TOP, ROW_H, 6, raw, 1.0 * 0.8) == want,
+           "(c) list scaled to 80%: the seam still returns the slot under the pointer")
+        ck(oldDropLine(TOP, ROW_H, 6, raw, 1.0) ~= want,
+           "(c) RED CONTROL: the shipped math does NOT return that slot")
+        ck(oldDropLine(TOP, ROW_H, 6, raw, 1.0) > want,
+           "(c) RED CONTROL: and it errs DOWNWARD — the bar would draw below the mouse")
+        ck(sweepNew(1.0, 0.8, 6, TOP) == 0,
+           "(c) list scaled to 80%: correct across the whole list, top to bottom")
+        ck(sweepOld(1.0, 0.8, 6, TOP) > 0,
+           "(c) RED CONTROL: the shipped math is wrong somewhere in that same sweep")
+    end
+
+    -- (d) DRIFT, NOT OFFSET — the old error GROWS with height above the screen's
+    --     bottom edge. That signature is why Raid Prep's reporter saw the bar
+    --     "well below" the mouse near the top of the list and close to it low down.
+    do
+        local nearTop    = math.abs(oldDropLine(TOP, ROW_H, 40, rawFor(TOP - 5.5, 1.0, 0.8), 1.0)
+                                    - expected(TOP, ROW_H, 40, TOP - 5.5))
+        local nearBottom = math.abs(oldDropLine(TOP, ROW_H, 40, rawFor(TOP - 200.5, 1.0, 0.8), 1.0)
+                                    - expected(TOP, ROW_H, 40, TOP - 200.5))
+        ck(nearTop > nearBottom,
+           "(d) RED CONTROL: the old error grows with height (drift, not a constant offset)")
+    end
+
+    -- (e) UI SCALE ALONE was NEVER the broken case: with the list at 100% the two
+    --     spaces coincide at any UI Scale. Pin that the new math keeps it so —
+    --     this is the half a careless "fix" would break.
+    do
+        for _, ui in ipairs({ 0.53, 0.71, 1.0, 1.25 }) do
+            ck(sweepNew(ui, 1.0, 6, TOP) == 0, ("(e) UI Scale %.2f, list 100%%: still exact"):format(ui))
+            ck(sweepOld(ui, 1.0, 6, TOP) == 0, ("(e) UI Scale %.2f, list 100%%: never broken — pinned"):format(ui))
+        end
+    end
+
+    -- (f) BOTH off parity: the effective scale COMPOUNDS. Above 100% the old math
+    --     drifts the other way, so the bar would draw ABOVE the mouse.
+    do
+        ck(sweepNew(0.71, 1.25, 6, TOP) == 0, "(f) UI Scale 0.71 x list 125%: compounded scale handled")
+        ck(sweepNew(1.35, 0.6,  6, TOP) == 0, "(f) UI Scale 1.35 x list 60%: compounded the other way too")
+        local y    = TOP - 75.5
+        local want = expected(TOP, ROW_H, 6, y)
+        ck(oldDropLine(TOP, ROW_H, 6, rawFor(y, 0.71, 1.25), 0.71) < want,
+           "(f) RED CONTROL: above 100% the old math errs UPWARD (bar above the mouse)")
+        ck(DropLine(TOP, ROW_H, 6, rawFor(y, 0.71, 1.25), 0.71 * 1.25) == want,
+           "(f) the seam is right in both directions")
+    end
+
+    -- (g) SCROLLED LIST — SetVerticalScroll moves the scroll child, so childTop is
+    --     simply somewhere else. The index must follow the ROWS, not the viewport.
+    do
+        local scrolledTop = TOP + 3 * ROW_H
+        ck(sweepNew(1.0, 0.8, 12, scrolledTop) == 0,
+           "(g) list scrolled down three rows at 80%: index follows the rows, not the viewport")
+        ck(sweepNew(1.0, 1.0, 12, scrolledTop) == 0, "(g) …and at scale 1 as well")
+
+        -- BOUNDARIES, pinned at scale 1 where the round trip is exact, so the
+        -- assertion is about the comparison and not about float representation.
+        ck(DropLine(TOP, ROW_H, 5, TOP - 15, 1) == 2,
+           "(g) exactly on row 1's midpoint resolves DOWN, once, with no tie")
+        ck(DropLine(TOP, ROW_H, 5, TOP - 14.999, 1) == 1,
+           "(g) a hair above that midpoint is the slot above — the boundary is where it says")
+        ck(DropLine(TOP, ROW_H, 5, TOP, 1) == 1, "(g) exactly on the list's top edge -> the head")
+        ck(DropLine(TOP, ROW_H, 5, TOP - 5 * ROW_H, 1) == 6,
+           "(g) exactly on the bottom edge of the last row -> past the tail")
+    end
+
+    -- (h) CURSOR OUTSIDE THE LIST at five scales: above every row -> the head;
+    --     below every row -> one past the tail. Never out of range either way.
+    do
+        for _, sc in ipairs({ 0.5, 0.8, 1.0, 1.25, 1.5 }) do
+            ck(DropLine(TOP, ROW_H, 5, rawFor(9000, 1.0, sc), sc) == 1,
+               ("(h) cursor far above the list at scale %d%% -> insert at the head"):format(sc * 100))
+            ck(DropLine(TOP, ROW_H, 5, rawFor(-9000, 1.0, sc), sc) == 6,
+               ("(h) cursor far below the list at scale %d%% -> insert past the tail"):format(sc * 100))
+        end
+    end
+
+    -- (i) EMPTY LIST: the only insertion point is 1, at any scale or cursor height.
+    ck(DropLine(TOP, ROW_H, 0, 400, 0.8) == 1, "(i) empty list -> insert at 1")
+    ck(DropLine(TOP, ROW_H, 0, -9999, 1.0) == 1, "(i) empty list, cursor off-screen low -> 1")
+    ck(DropLine(TOP, ROW_H, 0, 99999, 1.35) == 1, "(i) empty list, cursor off-screen high -> 1")
+
+    -- (j) DEGENERATE INPUT never raises and never returns a nil or fractional index.
+    do
+        local cases = {
+            { TOP, ROW_H, 4, 400, nil }, { TOP, ROW_H, 4, 400, 0 },     { TOP, ROW_H, 4, 400, -1 },
+            { TOP, ROW_H, 4, nil, 0.8 }, { nil, ROW_H, 4, 400, 0.8 },   { TOP, nil,   4, 400, 0.8 },
+            { TOP, 0,     4, 400, 0.8 }, { TOP, ROW_H, nil, 400, 0.8 }, { TOP, ROW_H, -3, 400, 0.8 },
+            { TOP, ROW_H, 4, 1 / 0, 0.8 },
+        }
+        local raised, oor = 0, 0
+        for _, c in ipairs(cases) do
+            local sok, line = pcall(DropLine, c[1], c[2], c[3], c[4], c[5])
+            if not sok then raised = raised + 1
+            elseif type(line) ~= "number" or line ~= line or line < 1 or line ~= math.floor(line) then
+                oor = oor + 1
+            end
+        end
+        ck(raised == 0, "(j) no degenerate input raises")
+        ck(oor == 0,    "(j) every answer is a whole index >= 1")
+        ck(DropLine(TOP, ROW_H, 4, 400, nil) == DropLine(TOP, ROW_H, 4, 400, 1),
+           "(j) a missing scale falls back to 1, never to a division by zero")
+    end
+
+    -- (k) STRUCTURAL — the ticker must decide through the seam, read the SCROLL
+    --     CHILD's scale for the hit-test, and keep UIParent's scale for the
+    --     movement threshold (which is a screen gesture and was always correct).
+    --     The anchor captured in OnMouseDown must stay in that same UIParent
+    --     space, or the 5px threshold would compare two different spaces.
+    do
+        local src = readFile(P("options.lua")) or ""
+        ck(src ~= "", "(k) options.lua is readable for the structural pins")
+        ck(src:find("Addon.ComputeDropLine(childTop, BUFF_ROW_H, n, cy, listScale)", 1, true) ~= nil,
+           "(k) the drag ticker decides through the pure seam")
+        ck(src:find("child:GetEffectiveScale()", 1, true) ~= nil,
+           "(k) the hit-test reads the SCROLL CHILD's effective scale")
+
+        local block = src:match("dragTick:SetScript%(\"OnUpdate\", function%(%)(.-)\n    end%)") or ""
+        ck(block ~= "", "(k) the drag ticker is locatable")
+        ck(block:find("UIParent:GetEffectiveScale()", 1, true) ~= nil,
+           "(k) UIParent's scale is still read — for the movement threshold")
+        ck(block:find("uiMX", 1, true) ~= nil and block:find("uiMY", 1, true) ~= nil,
+           "(k) the UIParent-space cursor is named for what it is")
+        ck(block:match("ComputeDropLine%([^)]*uiM") == nil,
+           "(k) REGRESSION PIN: the UIParent-space cursor never reaches the hit-test")
+        ck(block:find("relY", 1, true) == nil,
+           "(k) REGRESSION PIN: the old inline midpoint arithmetic is gone from the ticker")
+
+        local anchor = src:match("bt%._dragSourceIdx = ci; bt%._dragging = false(.-)end%)") or ""
+        ck(anchor ~= "", "(k) the OnMouseDown anchor capture is locatable")
+        ck(anchor:find("UIParent:GetEffectiveScale()", 1, true) ~= nil,
+           "(k) the click anchor is captured in UIParent space — the SAME space the threshold reads")
+        ck(anchor:find("child:GetEffectiveScale()", 1, true) == nil,
+           "(k) …and NOT in the list's space, which would split the threshold across two spaces")
+    end
+end
+V_DRAG = gateEnd("DRAG")
 
 ----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Buff-Tracker migration self-tests")
-realprint("#   GATE 0        toc parse          : PASS")
-realprint("#   GATE FW       clean-room firewall : PASS")
-realprint("#   GATE MIG-ALGO migration runner   : " .. (FAILS == 0 and "PASS" or "FAIL"))
-realprint("#   GATE MIG-INIT real Init()        : " .. (FAILS == 0 and "PASS" or "FAIL"))
-realprint("#   GATE CORE-GUARD RequireCore      : " .. (FAILS == 0 and "PASS" or "FAIL"))
+realprint("#   GATE 0        toc parse          : " .. V_TOC)
+realprint("#   GATE FW       clean-room firewall : " .. V_FW)
+realprint("#   GATE MIG-ALGO migration runner   : " .. V_ALGO)
+realprint("#   GATE MIG-INIT real Init()        : " .. V_INIT)
+realprint("#   GATE CORE-GUARD RequireCore      : " .. V_GUARD)
+realprint("#   GATE DRAG     reorder hit-test   : " .. V_DRAG)
 realprint("#")
 realprint("#   RESULT: " .. (FAILS == 0 and "ALL PASS" or (FAILS .. " FAILURE(S) — RED")))
 realprint("############################################################")
