@@ -155,6 +155,40 @@ _G.strfind, _G.strmatch, _G.strsub, _G.format =
     string.find, string.match, string.sub, string.format
 
 ----------------------------------------------------------------------
+-- AURA / WEAPON-ENCHANT WORLD (data-honesty §5: "ABSENT for the icon path").
+--
+-- The audit's verdict on this harness was that no GetItemInfo, UnitBuff or
+-- C_Container stubs existed at all, so the icon-resolution ladder and cachedIcon
+-- were unmodelled -- which is why BT-1 survived. What it asked for: enough of a
+-- UnitBuff surface to LEARN an icon, then a rename applied by the BUFF_RENAMES
+-- pass, then an assertion that the stale icon did NOT survive it.
+--
+-- Unkind by default: the rest of the icon ladder (BuffDB, GetSpellInfo,
+-- GetItemInfo) answers NOTHING, so what GetBuffIcon returns is decided purely by
+-- the aura scan and the cache -- which is the behaviour under test.
+----------------------------------------------------------------------
+local AURAS = {}                            -- { {name=, icon=, expires=, spellID=}, ... }
+local function setAuras(t) AURAS = t or {} end
+_G.UnitBuff = function(_, i)
+    local a = AURAS[i]
+    if not a then return nil end
+    return a.name, a.icon, 1, nil, nil, a.expires, nil, nil, nil, a.spellID
+end
+_G.GetTime = function() return 1000 end
+_G.GetSpellInfo = function() return nil end
+_G.GetItemInfo  = function() return nil end
+_G.GetInventoryItemTexture = function() return nil end
+
+-- GetWeaponEnchantInfo returns hasMH, mhExpiry(ms), mhCharges, mhEnchantID,
+-- hasOH, ohExpiry(ms), ... A present enchant whose expiry reads nil is the exact
+-- shape BT-2 turned into "this never expires".
+local ENCH = { hasMH = false, mhExpiry = nil, hasOH = false, ohExpiry = nil }
+local function setEnchant(t) ENCH = t or {} end
+_G.GetWeaponEnchantInfo = function()
+    return ENCH.hasMH, ENCH.mhExpiry, 0, 0, ENCH.hasOH, ENCH.ohExpiry, 0, 0
+end
+
+----------------------------------------------------------------------
 -- Load the REAL main.lua into a fresh Addon namespace.
 ----------------------------------------------------------------------
 local Addon = {}
@@ -598,6 +632,186 @@ end
 V_DRAG = gateEnd("DRAG")
 
 ----------------------------------------------------------------------
+-- GATE ICON: the persisted icon cache is stamped with what taught it (BT-1).
+--
+-- `item.cachedIcon` is learned by matching a buff NAME in the live UnitBuff scan,
+-- written into the PERSISTED profile, and returned forever. Its only invalidation
+-- was a boot-time TYPE check -- and a shape check is not a correctness check. The
+-- BUFF_RENAMES pass, in the very same Init() loop, rewrites the aura names the
+-- icons were learned under and did not clear a single one, so the icon learned
+-- under the old name was kept for good and survived a profile export/import.
+-- Two healing passes side by side that did not talk to each other.
+--
+-- The shipped read is kept as a RED CONTROL.
+----------------------------------------------------------------------
+gateBegin("GATE ICON: cachedIcon is stamped with the name that taught it (BT-1)")
+
+-- THE RED CONTROL: the shipped 2.1.x read, quoted in shape from main.lua:431.
+local function shippedIconRead(item)
+    if item.cachedIcon and type(item.cachedIcon) == "string" then return item.cachedIcon end
+    return nil
+end
+
+local V_ICON
+do
+    -- (a) LEARN. The aura is up; the icon is learned and stamped with its name.
+    local item = { buffNames = { "Greater Fire Power" }, displayName = "Greater Fire Power" }
+    setAuras({ { name = "Greater Fire Power", icon = "ICON_OLD" } })
+    ck(Addon:GetBuffIcon(item) == "ICON_OLD", "(a) the icon is learned from the live aura scan")
+    ck(item.cachedIcon == "ICON_OLD", "(a) ...and cached into the persisted item")
+    ck(item.cachedIconFor == "Greater Fire Power",
+       "(a) THE FIX: stamped with the aura name that produced it")
+
+    -- (b) The cache is a real cache: it still answers with the aura GONE.
+    setAuras({})
+    ck(Addon:GetBuffIcon(item) == "ICON_OLD", "(b) a still-valid cache is served without re-scanning")
+
+    -- (c) THE FINDING. Run the REAL Init(), whose BUFF_RENAMES pass rewrites the
+    --     very name this icon was learned under.
+    _G.DaseekiCTDB = { dbVersion = 3, profiles = { MAGE = { items = { item } } } }
+    Addon:Init()
+    ck(item.buffNames[1] == "Greater Firepower", "(c) the rename pass rewrote the aura name")
+    ck(shippedIconRead(item) == nil,
+       "(c) RED CONTROL: the shipped read would have returned the stale icon -- it no longer can")
+    ck(item.cachedIcon == nil, "(c) THE FIX: the rename cleared the icon it invalidated")
+    ck(item.cachedIconFor == nil, "(c) ...and its stamp")
+
+    -- (d) RE-LEARN under the new name.
+    setAuras({ { name = "Greater Firepower", icon = "ICON_NEW" } })
+    ck(Addon:GetBuffIcon(item) == "ICON_NEW", "(d) the icon is re-learned under the new name")
+    ck(item.cachedIconFor == "Greater Firepower", "(d) ...and re-stamped")
+
+    -- (e) The stamp catches a rename the healing pass knows NOTHING about -- the
+    --     player editing the entry in the options pane. This is the half a
+    --     clear-at-the-rename-pass fix would have missed entirely.
+    item.buffNames[1] = "Elixir of Greater Firepower"
+    setAuras({})
+    ck(Addon:GetBuffIcon(item) ~= "ICON_NEW",
+       "(e) a hand-edited buff name is a disagreement, and a disagreement re-learns")
+    ck(item.cachedIcon == nil, "(e) the disagreeing cache is dropped, not latched")
+
+    -- (f) LEGACY PROFILE, name untouched by the rename pass: the cache was learned
+    --     under the name the item still carries, so stamping it says something true.
+    local legacyOk = { buffNames = { "Nightfin Soup" }, cachedIcon = "ICON_LEGACY" }
+    _G.DaseekiCTDB = { dbVersion = 3, profiles = { PRIEST = { items = { legacyOk } } } }
+    Addon:Init()
+    ck(legacyOk.cachedIcon == "ICON_LEGACY", "(f) an untouched legacy cache is kept")
+    ck(legacyOk.cachedIconFor == "Nightfin Soup", "(f) ...and backfilled with the name it carries")
+    setAuras({})
+    ck(Addon:GetBuffIcon(legacyOk) == "ICON_LEGACY", "(f) ...so it is still served")
+
+    -- (g) LEGACY PROFILE the rename pass DID touch: provably broken provenance.
+    --     It is cleared, NOT backfilled with the new name it never saw.
+    local legacyBad = { buffNames = { "Mongoose" }, cachedIcon = "ICON_LEGACY" }
+    _G.DaseekiCTDB = { dbVersion = 3, profiles = { ROGUE = { items = { legacyBad } } } }
+    Addon:Init()
+    ck(legacyBad.buffNames[1] == "Elixir of the Mongoose", "(g) the rename applied")
+    ck(legacyBad.cachedIcon == nil, "(g) THE FIX: a renamed legacy cache is cleared, not adopted")
+    ck(legacyBad.cachedIconFor == nil, "(g) ...and not stamped with a name it never saw")
+
+    -- (h) The old shape check still holds: a non-string cache is still junk.
+    local junk = { buffNames = { "Nightfin Soup" }, cachedIcon = 7, cachedIconFor = "Nightfin Soup" }
+    _G.DaseekiCTDB = { dbVersion = 3, profiles = { DRUID = { items = { junk } } } }
+    Addon:Init()
+    ck(junk.cachedIcon == nil, "(h) a non-string cachedIcon is still cleared")
+
+    -- (i) An entry with no buff name at all cannot serve a cache off a nil stamp.
+    local nameless = { buffNames = {}, cachedIcon = "ICON_GHOST" }
+    setAuras({})
+    ck(Addon:GetBuffIcon(nameless) ~= "ICON_GHOST",
+       "(i) a nameless entry cannot match a nil stamp against a nil name")
+
+    -- (j) STRUCTURAL: the options editor's save clears the dead cache too, since
+    --     UpdateItemInProfile merges with pairs() and cannot see a nil.
+    local src = readFile(P("options.lua")) or ""
+    ck(src:find("prof.items[idx].cachedIcon    = nil", 1, true) ~= nil,
+       "(j) saving the entry editor clears the cache the merge cannot")
+    ck(src:find("prof.items[idx].cachedIconFor = nil", 1, true) ~= nil,
+       "(j) ...and its stamp")
+end
+V_ICON = gateEnd("ICON")
+
+----------------------------------------------------------------------
+-- GATE ENCH: an unreadable weapon-enchant timer is UNKNOWN, not forever (BT-2).
+--
+-- `return mhExpiry and (mhExpiry / 1000) or math.huge` reported infinite
+-- remaining when the enchant was present but its expiry could not be read --
+-- "I could not read it" rendered as "this never expires". The direction is
+-- backwards: a temporary enchant about to drop read as permanently fine, and the
+-- reminder icon stayed hidden. Unlike GetBuffExpiry/GetSpellExpiry, where
+-- expirationTime == 0 genuinely means permanent, GetWeaponEnchantInfo only ever
+-- reports TEMPORARY enchants -- there is no permanent case here at all.
+--
+-- frame.lua is loaded so the CONSUMERS are driven for real, not restated.
+----------------------------------------------------------------------
+gateBegin("GATE ENCH: an unreadable enchant timer is unknown, not infinite (BT-2)")
+
+local V_ENCH
+do
+    local chunk, err = loadfile(P("frame.lua"))
+    ck(chunk ~= nil, "frame.lua loads" .. (chunk and "" or (" -> " .. tostring(err))))
+    if chunk then
+        local okRun, rerr = pcall(chunk, ADDON_NAME, Addon)
+        ck(okRun, "frame.lua executes" .. (okRun and "" or (" -> " .. tostring(rerr))))
+    end
+
+    -- THE RED CONTROL: the shipped 2.1.x fallback.
+    local function shippedSecs(hasIt, expiry) return hasIt and (expiry and (expiry / 1000) or math.huge) or nil end
+
+    local mh = { weaponSlot = "mainhand" }
+
+    -- (a) THE FINDING: enchant present, expiry unreadable.
+    setEnchant({ hasMH = true, mhExpiry = nil })
+    ck(shippedSecs(true, nil) == math.huge,
+       "(a) RED CONTROL: the shipped fallback answers math.huge -- 'this never expires'")
+    ck(Addon:GetWeaponEnchantSecondsRemaining("mainhand") == nil,
+       "(a) THE FIX: no answer is reported as no answer")
+    ck(Addon:HasWeaponEnchant("mainhand") == true,
+       "(a) ...while the enchant's PRESENCE is still known, so the two are separable")
+    ck(Addon:IsItemMissing(mh) == true,
+       "(a) THE FIX: the reminder is SHOWN -- under math.huge it stayed hidden")
+    ck(Addon:GetItemExpirySeconds(mh) == nil,
+       "(a) ...with an empty countdown, not a number nobody read")
+
+    -- (b) A readable enchant is unchanged, on both sides of the warn threshold.
+    setEnchant({ hasMH = true, mhExpiry = 300000 })
+    ck(Addon:GetWeaponEnchantSecondsRemaining("mainhand") == 300, "(b) 300000ms reads as 300s")
+    ck(Addon:IsItemMissing(mh) == false, "(b) five minutes left is not a reminder")
+    ck(Addon:GetItemExpirySeconds(mh) == nil, "(b) ...and draws no countdown")
+
+    setEnchant({ hasMH = true, mhExpiry = 60000 })
+    ck(Addon:IsItemMissing(mh) == true, "(b) one minute left IS a reminder")
+    ck(Addon:GetItemExpirySeconds(mh) == 60, "(b) ...and draws the real number")
+
+    -- (c) No enchant at all is still simply missing.
+    setEnchant({ hasMH = false })
+    ck(Addon:GetWeaponEnchantSecondsRemaining("mainhand") == nil, "(c) no enchant -> nil")
+    ck(Addon:IsItemMissing(mh) == true, "(c) no enchant -> reminder")
+    ck(Addon:GetItemExpirySeconds(mh) == nil, "(c) no enchant -> no countdown")
+
+    -- (d) The offhand half behaves identically (it carried the same fallback).
+    local oh = { weaponSlot = "offhand" }
+    setEnchant({ hasOH = true, ohExpiry = nil })
+    ck(Addon:GetWeaponEnchantSecondsRemaining("offhand") == nil, "(d) offhand: no answer -> nil")
+    ck(Addon:IsItemMissing(oh) == true, "(d) offhand: unreadable -> reminder shown")
+    setEnchant({ hasOH = true, ohExpiry = 90000 })
+    ck(Addon:GetWeaponEnchantSecondsRemaining("offhand") == 90, "(d) offhand: 90000ms reads as 90s")
+
+    -- (e) REGRESSION PIN + the deliberate asymmetry: math.huge is gone from the
+    --     weapon-enchant reader, and still present where the API really does
+    --     report permanence (GetBuffExpiry / GetSpellExpiry).
+    local src = readFile(P("main.lua")) or ""
+    local block = src:match("function Addon:GetWeaponEnchantSecondsRemaining%(slot%)(.-)\nend") or ""
+    ck(block ~= "", "(e) GetWeaponEnchantSecondsRemaining is locatable")
+    ck(block:find("math.huge", 1, true) == nil,
+       "(e) REGRESSION PIN: no math.huge fallback in the weapon-enchant reader")
+    local buffBlock = src:match("function Addon:GetBuffExpiry%(buffName%)(.-)\nend") or ""
+    ck(buffBlock:find("math.huge", 1, true) ~= nil,
+       "(e) ...and math.huge is KEPT where the API genuinely reports no expiry")
+end
+V_ENCH = gateEnd("ENCH")
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Buff-Tracker migration self-tests")
 realprint("#   GATE 0        toc parse          : " .. V_TOC)
@@ -606,6 +820,8 @@ realprint("#   GATE MIG-ALGO migration runner   : " .. V_ALGO)
 realprint("#   GATE MIG-INIT real Init()        : " .. V_INIT)
 realprint("#   GATE CORE-GUARD RequireCore      : " .. V_GUARD)
 realprint("#   GATE DRAG     reorder hit-test   : " .. V_DRAG)
+realprint("#   GATE ICON     stamped icon cache : " .. V_ICON)
+realprint("#   GATE ENCH     unreadable ≠ forever: " .. V_ENCH)
 realprint("#")
 realprint("#   RESULT: " .. (FAILS == 0 and "ALL PASS" or (FAILS .. " FAILURE(S) — RED")))
 realprint("############################################################")

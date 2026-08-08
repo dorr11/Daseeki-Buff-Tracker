@@ -649,6 +649,12 @@ AutoSave = function()
     if prof and prof.items and prof.items[idx] then
         prof.items[idx].spellID    = E._spellID or nil
         prof.items[idx].weaponSlot = E._weaponSlot or nil
+        -- BT-1: `cachedIcon = nil` in def above is invisible to the pairs() merge,
+        -- so saving the editor used to leave the OLD icon on a renamed entry. The
+        -- stamp already refuses to serve it, but the dead value should not be
+        -- persisted either: this editor save just rewrote the entry's identity.
+        prof.items[idx].cachedIcon    = nil
+        prof.items[idx].cachedIconFor = nil
     end
 
     Addon:RefreshItemList()
