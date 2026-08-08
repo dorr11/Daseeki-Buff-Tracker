@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **Fixed: Flask of Distilled Wisdom and Flask of Chromatic Resistance were never
+  recognised.** You could be sitting there with 39 minutes of Distilled Wisdom on your
+  buff bar and Buff Tracker would still be telling you to drink one. The reason is that
+  these flasks put up a buff named after the *effect*, not the flask — the game calls it
+  "Distilled Wisdom", not "Flask of Distilled Wisdom" — and Buff Tracker was looking for
+  the flask's name, which never appears anywhere. Both are fixed, along with Elixir of
+  Giants (listed under a name the item does not even have) and Nightfin Soup (which puts
+  up "Mana Regeneration", shared with Mageblood Potion, so it is now matched by the exact
+  buff rather than the name). **You do not need to do anything and nothing disappears
+  from your bars** — entries you already track are corrected in place the next time you
+  log in, and typing the old flask name in the search box still finds them.
+
+- **Changed: buffs are now recognised by the game's own buff ID first, and by name only
+  as a fallback.** A name is the weakest way to identify a buff: it changes between
+  language clients, and — as the flasks above show — it is not always what you would
+  guess. Where Buff Tracker knows a buff's ID it now matches on that, so the entry works
+  on a non-English client and cannot be broken by a name being slightly wrong. The name
+  is still used when there is no ID, and as a backstop when there is: the IDs recorded
+  are for the highest rank, so a rank-5 Arcane Intellect is caught by the name instead of
+  being missed. Mageblood Potion and Nightfin Soup stay ID-only on purpose, since their
+  names are identical and the name is exactly what cannot tell them apart.
+
+- Changed: the buff list now records, for every single entry, whether its buff name has
+  actually been read off a live buff bar or is still unconfirmed — 108 entries, 56
+  confirmed. That is the honest state of it. The two broken flasks looked exactly like
+  the working ones, and there was no way to tell which entries had ever matched anything
+  and which had simply never been tried. Nothing was renamed on a hunch as part of this
+  fix; unconfirmed entries were flagged instead, and the flagged ones are being worked
+  through. If you want to check one yourself, `/dbt auras` prints every buff you have
+  right now with its name, its ID, and whether Buff Tracker recognises it.
+
+- Added: `/dbt auras` — lists the buffs currently on you with the exact name and ID the
+  game reports for each, and says whether Buff Tracker's list knows it. Useful for
+  telling us about a buff that is not being picked up: the output is the whole answer.
+
 - Fixed: a tracked buff whose name Buff Tracker corrected for you no longer keeps the
   old buff's icon forever. Some buffs are named one thing on the item and another thing
   in your buff bar — "Mageblood" is "Mana Regeneration", "Greater Fire Power" is

@@ -193,10 +193,15 @@ end
 ----------------------------------------------------------------------
 local Addon = {}
 do
-    local chunk, err = loadfile(P("main.lua"))
-    if not chunk then realprint("  FAIL  loadfile main.lua -> " .. tostring(err)); os.exit(2) end
-    local success, rerr = pcall(chunk, ADDON_NAME, Addon)
-    if not success then realprint("  FAIL  executing main.lua -> " .. tostring(rerr)); os.exit(2) end
+    -- buffs.lua FIRST, matching the .toc order. It is no longer optional scenery:
+    -- Init()'s rename pass now reads Addon.BuffAliases out of it, and the whole
+    -- AURA gate drives the REAL catalog rather than a restatement of it.
+    for _, f in ipairs({ "buffs.lua", "main.lua" }) do
+        local chunk, err = loadfile(P(f))
+        if not chunk then realprint("  FAIL  loadfile " .. f .. " -> " .. tostring(err)); os.exit(2) end
+        local success, rerr = pcall(chunk, ADDON_NAME, Addon)
+        if not success then realprint("  FAIL  executing " .. f .. " -> " .. tostring(rerr)); os.exit(2) end
+    end
 end
 -- Init seeds class profiles from Addon.ClassDefaults (defined in defaults.lua).
 -- The migration proof does not need real class data; stub it empty so the seed
@@ -692,11 +697,17 @@ do
 
     -- (f) LEGACY PROFILE, name untouched by the rename pass: the cache was learned
     --     under the name the item still carries, so stamping it says something true.
-    local legacyOk = { buffNames = { "Nightfin Soup" }, cachedIcon = "ICON_LEGACY" }
+    --     FIXTURE NOTE: this used to use "Nightfin Soup", chosen precisely because
+    --     the healing passes did not touch it. 2.1.2 made that false — Nightfin is
+    --     now upgraded to its ambiguous-aura spell ID (18194), so it is no longer
+    --     an "untouched" name and cannot test one. "Juju Power" is in neither
+    --     Addon.BuffAliases nor Addon.BuffSpellUpgrades and carries the property the
+    --     fixture needs. What is being asserted is unchanged.
+    local legacyOk = { buffNames = { "Juju Power" }, cachedIcon = "ICON_LEGACY" }
     _G.DaseekiCTDB = { dbVersion = 3, profiles = { PRIEST = { items = { legacyOk } } } }
     Addon:Init()
     ck(legacyOk.cachedIcon == "ICON_LEGACY", "(f) an untouched legacy cache is kept")
-    ck(legacyOk.cachedIconFor == "Nightfin Soup", "(f) ...and backfilled with the name it carries")
+    ck(legacyOk.cachedIconFor == "Juju Power", "(f) ...and backfilled with the name it carries")
     setAuras({})
     ck(Addon:GetBuffIcon(legacyOk) == "ICON_LEGACY", "(f) ...so it is still served")
 
@@ -710,7 +721,7 @@ do
     ck(legacyBad.cachedIconFor == nil, "(g) ...and not stamped with a name it never saw")
 
     -- (h) The old shape check still holds: a non-string cache is still junk.
-    local junk = { buffNames = { "Nightfin Soup" }, cachedIcon = 7, cachedIconFor = "Nightfin Soup" }
+    local junk = { buffNames = { "Juju Power" }, cachedIcon = 7, cachedIconFor = "Juju Power" }
     _G.DaseekiCTDB = { dbVersion = 3, profiles = { DRUID = { items = { junk } } } }
     Addon:Init()
     ck(junk.cachedIcon == nil, "(h) a non-string cachedIcon is still cleared")
@@ -812,6 +823,278 @@ end
 V_ENCH = gateEnd("ENCH")
 
 ----------------------------------------------------------------------
+-- GATE AURA: the catalog is keyed by the AURA name, and says which keys it has
+--            actually read (2.1.2).
+--
+-- THE DEFECT: Addon.BuffDB is matched against the name UnitBuff() returns, but
+-- three of its keys were the ITEM's name instead. "Flask of Distilled Wisdom" can
+-- never equal "Distilled Wisdom", so the reminder icon stayed lit with the flask
+-- visibly on the player's bar — reported by the owner with the aura and its spell
+-- ID (17627) on screen. Chromatic Resistance was the same bug, unreported. The
+-- shipped "Supreme Power" row proves the correct shape was known and just not
+-- applied to its siblings.
+--
+-- THE SECOND DEFECT, which is why this gate is not four assertions: nothing in the
+-- catalog recorded WHICH keys had ever been read off a live bar, so a key that had
+-- never matched anything was indistinguishable from one that matched every day.
+-- Every row now declares `nameSrc` (confirmed, and by whom) or `verify` (unread —
+-- "assumed" or "suspect"). This gate refuses an undeclared row, which is what stops
+-- the next entry from being added on a hunch.
+--
+-- frame.lua is already loaded by GATE ENCH, so IsItemMissing is driven for real.
+----------------------------------------------------------------------
+gateBegin("GATE AURA: catalog keyed by aura name + provenance declared (2.1.2)")
+
+local V_AURA
+do
+    local NOW = 1000  -- the GetTime() stub
+
+    -- ── (a) THE FULL CATALOG AUDIT. Every entry, no exceptions. ────────────────
+    local rows, counts = Addon:AuditBuffDB()
+    ck(#rows > 0, "(a) the catalog audit returns rows")
+    ck(counts.undeclared == 0,
+       "(a) every entry declares its provenance (undeclared: " .. counts.undeclared .. ")")
+    ck(counts.verified + counts.assumed + counts.suspect + counts.undeclared == #rows,
+       "(a) the status counts account for every row")
+
+    -- The source token on a verified row must be one we can actually point at.
+    local KNOWN_SRC = { spec = true, nexus = true, rename = true, owner = true, repo = true, spell = true }
+    local badSrc = {}
+    for _, r in ipairs(rows) do
+        if r.status == "verified" then
+            for tok in tostring(r.source):gmatch("[^+]+") do
+                if not KNOWN_SRC[tok] then badSrc[#badSrc + 1] = r.key .. "=" .. tok end
+            end
+        end
+    end
+    ck(#badSrc == 0, "(a) every verified row cites a known source (" .. table.concat(badSrc, ", ") .. ")")
+
+    -- A flagged row must carry a spell ID or be reported as having none, so the
+    -- owner's in-game list is exhaustive rather than a sample.
+    local flaggedNoID, flaggedWithID = 0, 0
+    for _, r in ipairs(rows) do
+        if r.status == "assumed" or r.status == "suspect" then
+            if r.spellID then flaggedWithID = flaggedWithID + 1 else flaggedNoID = flaggedNoID + 1 end
+        end
+    end
+    ck(flaggedNoID + flaggedWithID == counts.assumed + counts.suspect,
+       "(a) every flagged row is accounted for with or without a spell ID")
+
+    realprint(("    AUDIT  %d entries: %d verified, %d assumed, %d suspect, %d undeclared")
+        :format(#rows, counts.verified, counts.assumed, counts.suspect, counts.undeclared))
+    realprint(("    AUDIT  flagged rows: %d with a spell ID, %d with none")
+        :format(flaggedWithID, flaggedNoID))
+    for _, r in ipairs(rows) do
+        realprint(("      %-9s %-36s id=%-7s %s")
+            :format(r.status, r.key, tostring(r.spellID or "-"),
+                    r.status == "verified" and ("<- " .. tostring(r.source)) or ("[" .. r.label .. "]")))
+    end
+
+    -- ── (b) PER-MISMATCH RED/GREEN. Old key misses; new key + ID matches. ──────
+    -- The RED CONTROL is Addon:GetBuffExpiry — the shipped 2.1.1 matcher, name and
+    -- nothing else. It is quoted here, not reimplemented.
+    local MISMATCHES = {
+        { old = "Flask of Distilled Wisdom",     new = "Distilled Wisdom",     id = 17627 },
+        { old = "Flask of Chromatic Resistance", new = "Chromatic Resistance", id = 17629 },
+        { old = "Elixir of the Giants",          new = "Elixir of Giants",     id = nil   },
+    }
+    for _, m in ipairs(MISMATCHES) do
+        setAuras({ { name = m.new, spellID = m.id, expires = NOW + 2340 } })  -- 39m, the screenshot
+
+        ck(Addon.BuffDB[m.old] == nil, "(b) " .. m.old .. ": the item-name key is gone from the catalog")
+        ck(Addon.BuffDB[m.new] ~= nil, "(b) " .. m.new .. ": the aura-name key is present")
+        ck(Addon.BuffDB[m.new].label == (m.old == "Elixir of the Giants" and "Elixir of Giants" or m.old),
+           "(b) " .. m.new .. ": the ITEM name is kept as the label, so it is still findable")
+        ck(Addon.BuffDB[m.new].spellID == m.id, "(b) " .. m.new .. ": carries spell ID " .. tostring(m.id))
+
+        ck(Addon:GetBuffExpiry(m.old) == nil,
+           "(b) RED CONTROL: the shipped name matcher does NOT see the aura under \"" .. m.old .. "\"")
+        ck(Addon:GetBuffExpiry(m.new) ~= nil,
+           "(b) GREEN: ...and does see it under \"" .. m.new .. "\"")
+        ck(Addon:GetNamedBuffExpiry(m.new) ~= nil, "(b) GREEN: the shipped matcher resolves the new key")
+
+        -- THE FIX IS A REMINDER THAT GOES QUIET. Drive the real consumer.
+        ck(Addon:IsItemMissing({ buffNames = { m.new } }) == false,
+           "(b) " .. m.new .. ": the tracked entry reads SATISFIED, reminder silent")
+        setAuras({})
+        ck(Addon:IsItemMissing({ buffNames = { m.new } }) == true,
+           "(b) " .. m.new .. ": aura absent -> the reminder fires")
+    end
+
+    -- ── (c) ALIAS CONTINUITY: a profile keyed the old way KEEPS WORKING. ───────
+    -- The alias map is the migration; this drives the REAL Init() over a profile
+    -- shaped exactly like a 2.1.1 player's.
+    do
+        local legacy = {
+            { buffNames = { "Flask of Distilled Wisdom" },     displayName = "Flask of Distilled Wisdom",     itemID = 13511 },
+            { buffNames = { "Flask of Chromatic Resistance" }, displayName = "Flask of Chromatic Resistance", itemID = 13513 },
+            { buffNames = { "Elixir of the Giants" },          displayName = "Elixir of the Giants",          itemID = 9206  },
+            { buffName  = "Flask of Supreme Power",            displayName = "Flask of Supreme Power",        itemID = 13512 },
+            { buffNames = { "Nightfin Soup" },                 displayName = "Nightfin Soup",                 itemID = 13931 },
+            { buffNames = { "Juju Power" },                    displayName = "Juju Power",                    itemID = 12451 },
+        }
+        local before = #legacy
+        _G.DaseekiCTDB = { dbVersion = 3, profiles = { WARRIOR = { items = legacy } } }
+        Addon:Init()
+        ck(#legacy == before, "(c) SavedVariables continuity: no entry was dropped by the migration")
+
+        ck(legacy[1].buffNames[1] == "Distilled Wisdom", "(c) \"Flask of Distilled Wisdom\" -> \"Distilled Wisdom\"")
+        ck(legacy[1].itemID == 13511, "(c) ...and the rest of the entry is untouched")
+        ck(legacy[2].buffNames[1] == "Chromatic Resistance", "(c) \"Flask of Chromatic Resistance\" -> \"Chromatic Resistance\"")
+        ck(legacy[3].buffNames[1] == "Elixir of Giants", "(c) \"Elixir of the Giants\" -> \"Elixir of Giants\"")
+        ck(legacy[4].buffName == "Supreme Power", "(c) the 2.0.0 aliases still apply (legacy single buffName field)")
+        ck(legacy[6].buffNames[1] == "Juju Power", "(c) a name with no alias is left exactly alone")
+
+        -- Nightfin is the one that may NOT take a plain alias: "Mana Regeneration"
+        -- is shared with Mageblood Potion, so it is upgraded to the spell ID.
+        ck(legacy[5].spellID == 18194, "(c) \"Nightfin Soup\" is upgraded to its ambiguous-aura spell ID")
+        ck(legacy[5].buffNames[1] == "Mana Regeneration", "(c) ...with the real aura name recorded")
+        ck(legacy[5].displayName == "Nightfin Soup", "(c) ...and the label the player recognises kept")
+
+        -- The migrated entries now actually resolve, which is the whole point.
+        setAuras({ { name = "Distilled Wisdom", spellID = 17627, expires = NOW + 2340 } })
+        ck(Addon:IsItemMissing(legacy[1]) == false,
+           "(c) THE ACCEPTANCE FIXTURE: a 2.1.1 profile entry is satisfied by the live aura after migration")
+    end
+
+    -- ── (d) A LEGACY NAME THAT NEVER PASSED THROUGH Init() still resolves. ─────
+    -- Imported profile strings and hand-typed old names never see the boot-time
+    -- migration, so the alias is consulted at MATCH time too.
+    setAuras({ { name = "Distilled Wisdom", spellID = 17627, expires = NOW + 2340 } })
+    ck(Addon:GetCatalogSpellID("Flask of Distilled Wisdom") == 17627,
+       "(d) a legacy key resolves to the current row's spell ID through the alias")
+    ck(Addon:GetNamedBuffExpiry("Flask of Distilled Wisdom") ~= nil,
+       "(d) ...so an unmigrated legacy name still matches the live aura")
+    ck(Addon:GetBuffExpiry("Flask of Distilled Wisdom") == nil,
+       "(d) RED CONTROL: by NAME alone it still cannot — the ID is doing the work")
+
+    -- ── (e) ID-FIRST: a wrong or localized NAME still resolves on the ID. ──────
+    do
+        -- The aura is up, but the client reports it under a name this catalog has
+        -- never seen — a non-English client, or a name Blizzard changed.
+        setAuras({ { name = "Weisheitselixier", spellID = 17627, expires = NOW + 2340 } })
+        ck(Addon:GetBuffExpiry("Distilled Wisdom") == nil,
+           "(e) RED CONTROL: name matching alone fails on a localized aura name")
+        ck(Addon:GetNamedBuffExpiry("Distilled Wisdom") ~= nil,
+           "(e) THE FIX: the spell ID matches it anyway")
+        ck(Addon:IsItemMissing({ buffNames = { "Distilled Wisdom" } }) == false,
+           "(e) ...and the reminder stays silent, on a client we cannot read")
+
+        -- And the converse, which is why this is ID-FIRST and not ID-ONLY: the
+        -- catalog IDs are max-rank, so a lower-rank cast carries a different ID and
+        -- only the NAME can catch it.
+        setAuras({ { name = "Arcane Intellect", spellID = 1461, expires = NOW + 1800 } })
+        ck(Addon.BuffDB["Arcane Intellect"].spellID == 10157, "(e) the catalog holds the max-rank ID")
+        ck(Addon:GetSpellExpiry(10157) == nil, "(e) RED CONTROL: ID-ONLY would miss the lower rank")
+        ck(Addon:GetNamedBuffExpiry("Arcane Intellect") ~= nil,
+           "(e) THE FIX: the name fallback catches the rank the ID does not")
+
+        -- An entry the catalog knows nothing about is pure name matching, unchanged.
+        setAuras({ { name = "Some Custom Buff", expires = NOW + 60 } })
+        ck(Addon:GetCatalogSpellID("Some Custom Buff") == nil, "(e) an uncatalogued name has no ID")
+        ck(Addon:GetNamedBuffExpiry("Some Custom Buff") ~= nil, "(e) ...and still matches by name")
+    end
+
+    -- ── (f) THE AMBIGUOUS AURAS STAY STRICT. ID-first must not leak into them. ─
+    do
+        local mageblood = { spellID = 24363, buffNames = { "Mana Regeneration" }, displayName = "Mageblood Potion" }
+        -- Nightfin is up. Its aura NAME is identical to Mageblood's.
+        setAuras({ { name = "Mana Regeneration", spellID = 18194, expires = NOW + 600 } })
+        ck(Addon:IsAmbiguousAuraSpell(24363) == true, "(f) Mageblood's aura is known to be ambiguous")
+        ck(Addon:GetBuffExpiry("Mana Regeneration") ~= nil,
+           "(f) RED CONTROL: a name fallback here WOULD match — the soup answers for the potion")
+        ck(Addon:GetItemExpiry(mageblood) == nil,
+           "(f) THE RULE: an ambiguous entry stops at its ID and does not fall back to the name")
+        ck(Addon:IsItemMissing(mageblood) == true, "(f) ...so the Mageblood reminder correctly still fires")
+        -- With the right potion up it resolves, so the strictness is not just "never".
+        setAuras({ { name = "Mana Regeneration", spellID = 24363, expires = NOW + 600 } })
+        ck(Addon:IsItemMissing(mageblood) == false, "(f) the real Mageblood aura satisfies it")
+    end
+
+    -- ── (g) An entry that identifies NOTHING is not a reminder. ────────────────
+    setAuras({})
+    do
+        local secs, tracked = Addon:GetItemExpiry({ buffNames = {} })
+        ck(secs == nil and tracked == false, "(g) a nameless, ID-less entry reports itself untracked")
+        ck(Addon:IsItemMissing({ buffNames = {} }) == false,
+           "(g) ...and draws no reminder (the pre-2.1.2 behaviour, preserved through the new seam)")
+    end
+
+    -- ── (h) THE CATALOG AND ITS MIGRATION CANNOT DISAGREE. ────────────────────
+    do
+        local dangling = {}
+        for old, new in pairs(Addon.BuffAliases) do
+            ck(Addon.BuffDB[old] == nil,
+               "(h) legacy key \"" .. old .. "\" is not ALSO a live catalog key")
+            if Addon.BuffDB[new] == nil then
+                -- Permitted only when the target is an ambiguous aura, which lives
+                -- in BuffSpellDB rather than BuffDB.
+                local inSpellDB = false
+                for _, e in ipairs(Addon.BuffSpellDB) do if e.aura == new then inSpellDB = true end end
+                if not inSpellDB then dangling[#dangling + 1] = old .. " -> " .. new end
+            end
+        end
+        ck(#dangling == 0, "(h) every alias points at a row that exists (" .. table.concat(dangling, ", ") .. ")")
+
+        for old, up in pairs(Addon.BuffSpellUpgrades) do
+            ck(Addon.BuffDB[old] == nil,
+               "(h) upgraded key \"" .. old .. "\" is gone from the catalog (it could never match)")
+            local found = false
+            for _, e in ipairs(Addon.BuffSpellDB) do
+                if e.spellID == up.spellID and e.aura == up.aura then found = true end
+            end
+            ck(found, "(h) \"" .. old .. "\" upgrades to a spell ID the ambiguous-aura table knows")
+        end
+
+        -- REGRESSION PIN: the aura-name rule itself. No catalog key may be the
+        -- label of a DIFFERENT row — that is the shape of "keyed by item name".
+        local labelClash = {}
+        for key, data in pairs(Addon.BuffDB) do
+            for otherKey, other in pairs(Addon.BuffDB) do
+                if key ~= otherKey and other.label == key then
+                    labelClash[#labelClash + 1] = key .. " is also " .. otherKey .. "'s label"
+                end
+            end
+        end
+        ck(#labelClash == 0, "(h) REGRESSION PIN: no key is another row's item label (" ..
+           table.concat(labelClash, "; ") .. ")")
+    end
+
+    -- ── (i) The old name is still SEARCHABLE, or the fix hides the entry. ──────
+    do
+        local function findLabel(q, label)
+            for _, r in ipairs(Addon:SearchBuffDB(q)) do
+                if r.label == label then return r end
+            end
+            return nil
+        end
+        local r = findLabel("flask of distilled wisdom", "Flask of Distilled Wisdom")
+        ck(r ~= nil, "(i) typing the OLD name still finds the re-keyed entry")
+        ck(r and r.buffName == "Distilled Wisdom", "(i) ...and it hands back the AURA name to track")
+        ck(r and r.spellID == 17627, "(i) ...with the spell ID")
+        ck(findLabel("distilled", "Flask of Distilled Wisdom") ~= nil, "(i) a partial old name works too")
+        ck(findLabel("supreme power", "Flask of Supreme Power") ~= nil, "(i) the 2.0.0 precedent is unaffected")
+    end
+
+    -- ── (j) STRUCTURAL: the migration map lives with the catalog it migrates. ──
+    do
+        local m = readFile(P("main.lua")) or ""
+        ck(m:find("local BUFF_RENAMES  = Addon.BuffAliases or {}", 1, true) ~= nil,
+           "(j) Init() takes its renames from the catalog file, not a private copy")
+        ck(m:find("BUFF_RENAMES = {", 1, true) == nil,
+           "(j) REGRESSION PIN: no second, drifting copy of the rename map in main.lua")
+        local f = readFile(P("frame.lua")) or ""
+        ck(f:find("Addon:GetItemExpiry(item)", 1, true) ~= nil,
+           "(j) both frame.lua consumers decide through the single expiry seam")
+        ck(f:find("Addon:GetMultiBuffExpiry(names)", 1, true) == nil,
+           "(j) REGRESSION PIN: frame.lua no longer re-implements the ID-vs-name choice")
+        local b = readFile(P("buffs.lua")) or ""
+        ck(b:find("Addon.BuffAliases", 1, true) ~= nil, "(j) the alias map ships beside the catalog")
+    end
+end
+V_AURA = gateEnd("AURA")
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Buff-Tracker migration self-tests")
 realprint("#   GATE 0        toc parse          : " .. V_TOC)
@@ -822,6 +1105,7 @@ realprint("#   GATE CORE-GUARD RequireCore      : " .. V_GUARD)
 realprint("#   GATE DRAG     reorder hit-test   : " .. V_DRAG)
 realprint("#   GATE ICON     stamped icon cache : " .. V_ICON)
 realprint("#   GATE ENCH     unreadable ≠ forever: " .. V_ENCH)
+realprint("#   GATE AURA     aura-name catalog  : " .. V_AURA)
 realprint("#")
 realprint("#   RESULT: " .. (FAILS == 0 and "ALL PASS" or (FAILS .. " FAILURE(S) — RED")))
 realprint("############################################################")

@@ -16,19 +16,15 @@ function Addon:IsItemMissing(item)
         if secs == nil then return true end
         return secs <= EXPIRY_WARN_SEC
     end
-    if item.spellID then
-        local best = Addon:GetSpellExpiry(item.spellID)
-        if best == nil then return true end
-        return best <= EXPIRY_WARN_SEC
-    end
-    local names = Addon:GetBuffNames(item)
-    if #names > 0 then
-        local best = Addon:GetMultiBuffExpiry(names)
-        if best == nil then return true end              -- no buff active
-        if best <= EXPIRY_WARN_SEC then return true end  -- best buff expiring soon
-        return false
-    end
-    return false
+    -- Spell-ID-first, name-fallback, ambiguous-aura-strict: all one rule, decided
+    -- once in Addon:GetItemExpiry. `tracked` separates "this entry identifies no
+    -- aura at all" (draw nothing) from "the aura it identifies is absent" (draw the
+    -- reminder) — two situations the old inline arithmetic answered with the same
+    -- `false`/`true` by accident of ordering.
+    local best, tracked = Addon:GetItemExpiry(item)
+    if not tracked then return false end
+    if best == nil then return true end              -- no buff active
+    return best <= EXPIRY_WARN_SEC                   -- expiring soon
 end
 
 -- Returns seconds remaining when an item is in the "expiring soon" state, nil otherwise.
@@ -42,17 +38,8 @@ function Addon:GetItemExpirySeconds(item)
         end
         return nil
     end
-    if item.spellID then
-        local best = Addon:GetSpellExpiry(item.spellID)
-        if best and best ~= math.huge and best <= EXPIRY_WARN_SEC then return best end
-        return nil
-    end
-    local names = Addon:GetBuffNames(item)
-    if #names > 0 then
-        local best = Addon:GetMultiBuffExpiry(names)
-        if best and best ~= math.huge and best <= EXPIRY_WARN_SEC then return best end
-        return nil
-    end
+    local best = Addon:GetItemExpiry(item)
+    if best and best ~= math.huge and best <= EXPIRY_WARN_SEC then return best end
     return nil
 end
 
