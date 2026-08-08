@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Fixed: a tracked buff whose name Buff Tracker corrected for you no longer keeps the
+  old buff's icon forever. Some buffs are named one thing on the item and another thing
+  in your buff bar — "Mageblood" is "Mana Regeneration", "Greater Fire Power" is
+  "Greater Firepower" — and Buff Tracker quietly repairs those names when it loads. It
+  also remembers each entry's icon the first time it sees the buff on you. What it never
+  did was connect the two: the icon was learned under the old name, the name was then
+  corrected, and the icon stayed — permanently, and through a profile export and import.
+  Each remembered icon now records which buff name taught it to Buff Tracker, and is
+  used only while that name still matches. Rename an entry yourself in the settings and
+  the same thing happens: the icon is looked up again instead of kept.
+
+- Fixed: a temporary weapon enchant whose remaining time the game will not report is now
+  treated as unknown instead of as permanent. Buff Tracker used to answer "infinite" when
+  it could not read the timer, which is the wrong way round — your Windfury could be
+  seconds from dropping and the reminder icon stayed hidden because, as far as the addon
+  was concerned, it never expires. Now the icon appears with a blank timer until the game
+  answers, which is usually the very next moment.
+
 - Changed: Daseeki Buff Tracker is now licensed **All Rights Reserved** rather than MIT, matching the rest of the suite. This rides the next release — 2.1.1 was published to CurseForge with the MIT file still in place.
 - Changed: if your Daseeki Core is too old for the Buff Tracker settings page, the message now tells you which version you actually have installed, in the same wording every Daseeki addon uses.
 - Fixed: dragging a tracked buff to reorder it will keep dropping where you point, whatever

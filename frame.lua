@@ -9,7 +9,12 @@ function Addon:IsItemMissing(item)
     if item.weaponSlot and item.weaponSlot ~= "" then
         if not Addon:HasWeaponEnchant(item.weaponSlot) then return true end
         local secs = Addon:GetWeaponEnchantSecondsRemaining(item.weaponSlot)
-        return secs ~= nil and secs <= EXPIRY_WARN_SEC
+        -- BT-2: the enchant IS on the weapon but the client did not say how long is
+        -- left. That is not "you are fine" — it is the one moment you want to look
+        -- at the weapon. Show the reminder (with no countdown, see
+        -- GetItemExpirySeconds) and let the next tick replace it with a real number.
+        if secs == nil then return true end
+        return secs <= EXPIRY_WARN_SEC
     end
     if item.spellID then
         local best = Addon:GetSpellExpiry(item.spellID)
@@ -31,6 +36,8 @@ function Addon:GetItemExpirySeconds(item)
     if item.weaponSlot and item.weaponSlot ~= "" then
         if Addon:HasWeaponEnchant(item.weaponSlot) then
             local secs = Addon:GetWeaponEnchantSecondsRemaining(item.weaponSlot)
+            -- BT-2: a nil here is "no answer", and it stays nil — the icon renders
+            -- with an EMPTY countdown rather than a number we did not read.
             if secs and secs <= EXPIRY_WARN_SEC then return secs end
         end
         return nil

@@ -219,12 +219,20 @@ function Addon:Init()
     }
     for _, profile in pairs(db.profiles or {}) do
         for _, item in ipairs(profile.items or {}) do
+            -- BT-1: track whether THIS pass rewrote the aura name, because the icon
+            -- cache below was learned by matching that name in a live UnitBuff scan.
+            -- A rename destroys the cache's entire provenance, and until now the two
+            -- healing passes sat in this very loop and did not talk to each other:
+            -- an icon learned under "Mageblood" was kept forever under
+            -- "Mana Regeneration", and survived a profile export/import.
+            local renamed = false
             if item.buffName and BUFF_RENAMES[item.buffName] then
                 item.buffName = BUFF_RENAMES[item.buffName]
+                renamed = true
             end
             if item.buffNames then
                 for i, n in ipairs(item.buffNames) do
-                    if BUFF_RENAMES[n] then item.buffNames[i] = BUFF_RENAMES[n] end
+                    if BUFF_RENAMES[n] then item.buffNames[i] = BUFF_RENAMES[n]; renamed = true end
                 end
             end
             -- Legacy Mageblood tracking was name-only; before Nightfin existed the
@@ -245,9 +253,22 @@ function Addon:Init()
                     item.displayName = "Mageblood Potion"
                     item.buffName    = nil
                     item.buffNames   = { "Mana Regeneration" }
+                    renamed = true
                 end
             end
+
+            -- A shape check is not a correctness check.
             if type(item.cachedIcon) ~= "string" then item.cachedIcon = nil end
+            if renamed then
+                -- The name it was learned under no longer exists on this item.
+                item.cachedIcon, item.cachedIconFor = nil, nil
+            elseif item.cachedIcon and item.cachedIconFor == nil then
+                -- One-shot backfill for profiles saved before the stamp existed.
+                -- The name was NOT rewritten by this pass, so "it was learned under
+                -- the name this item still carries" is a true statement about it --
+                -- which is exactly why it is only made for the untouched items.
+                item.cachedIconFor = (item.buffNames and item.buffNames[1]) or item.buffName
+            end
         end
     end
 
@@ -321,13 +342,24 @@ function Addon:HasWeaponEnchant(slot)
     return false
 end
 
+-- BT-2. Returns seconds remaining on a TEMPORARY weapon enchant, or nil.
+--
+-- nil means one of two things, and the caller is expected to tell them apart with
+-- Addon:HasWeaponEnchant: no enchant at all, or an enchant that is there but whose
+-- remaining time the client did not answer for. What it must NEVER mean is
+-- "forever". This used to fall back to math.huge when the expiry came back nil --
+-- rendering "I could not read it" as "this never expires", which is the wrong
+-- direction: an unknown read as permanently fine, on a buff that is about to drop.
+-- Unlike GetBuffExpiry/GetSpellExpiry, where expirationTime == 0 genuinely means
+-- permanent in that API, GetWeaponEnchantInfo only ever reports TEMPORARY enchants
+-- -- there is no permanent case here for math.huge to stand for.
 function Addon:GetWeaponEnchantSecondsRemaining(slot)
     local hasMH, mhExpiry, _, _, hasOH, ohExpiry = GetWeaponEnchantInfo()
     if slot == "mainhand" and hasMH then
-        return mhExpiry and (mhExpiry / 1000) or math.huge
+        return mhExpiry and (mhExpiry / 1000) or nil
     end
     if slot == "offhand" and hasOH then
-        return ohExpiry and (ohExpiry / 1000) or math.huge
+        return ohExpiry and (ohExpiry / 1000) or nil
     end
     return nil
 end
@@ -428,16 +460,27 @@ function Addon:GetBuffIcon(item)
         if sicon then return sicon end
         return "Interface\\Icons\\INV_Misc_QuestionMark"
     end
-    if item.cachedIcon and type(item.cachedIcon) == "string" then return item.cachedIcon end
-    item.cachedIcon = nil  -- clear any stale non-string value
     local primaryBuff = Addon:GetBuffNames(item)[1]
+    -- BT-1: the cache below is learned by matching an aura NAME in a live UnitBuff
+    -- scan, and it is PERSISTED into the profile. It is therefore only valid for
+    -- the name it was learned under -- so it carries that name as its stamp, and is
+    -- served only while the stamp still agrees with the name being resolved now.
+    -- A rename (by the healing pass at Init, or by the player editing the entry)
+    -- makes the stamp disagree, and a disagreement re-learns rather than latching.
+    -- An unstamped cache is one whose provenance we cannot vouch for.
+    if type(item.cachedIcon) == "string" and primaryBuff and primaryBuff ~= ""
+       and item.cachedIconFor == primaryBuff then
+        return item.cachedIcon
+    end
+    item.cachedIcon, item.cachedIconFor = nil, nil
     -- 1. Active buff scan — most accurate and caches for this session
     if primaryBuff and primaryBuff ~= "" then
         for i = 1, 40 do
             local name, icon = UnitBuff("player", i)
             if not name then break end
             if name == primaryBuff then
-                item.cachedIcon = icon
+                item.cachedIcon    = icon
+                item.cachedIconFor = primaryBuff   -- the evidence that produced it
                 return icon
             end
         end
