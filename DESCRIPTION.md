@@ -19,6 +19,7 @@ Customizable buff and consumable tracker for WoW Classic Era. Shows what's missi
 - `/dbt toggle` — show/hide the tracker frame
 - `/dbt lock` — lock/unlock the frame so it can't be accidentally dragged
 - `/dbt reset` — reset the frame back to its default screen position
+- `/dbt auras` — list the buffs currently on you with the exact name and spell ID the game reports for each, and whether Buff Tracker recognises it (paste this if a buff is not being picked up)
 
 ## Requires
 Optional: Daseeki Core — adds the tracker's options panel to the shared Daseeki options hub and applies the suite theme/font. Works standalone without it.

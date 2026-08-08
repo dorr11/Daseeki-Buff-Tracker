@@ -209,14 +209,14 @@ function Addon:Init()
 
     -- Migrate buff names that didn't match the actual UnitBuff() aura name, and
     -- clear stale cachedIcon values (e.g. from the count-as-icon bug).
-    local BUFF_RENAMES = {
-        ["Mongoose"]            = "Elixir of the Mongoose",
-        ["Firewater"]           = "Winterfall Firewater",
-        ["R.O.I.D.S."]          = "Rage of Ages",
-        ["Mageblood"]              = "Mana Regeneration",
-        ["Greater Fire Power"]     = "Greater Firepower",
-        ["Flask of Supreme Power"] = "Supreme Power",
-    }
+    --
+    -- The map itself lives in buffs.lua beside the catalog it migrates, because the
+    -- two are one fact: a catalog re-key without its alias is a player's tracker
+    -- going quietly dead. Keeping them in the same file is what makes it hard to do
+    -- one and forget the other. `or {}` so a stripped install degrades to "rename
+    -- nothing" rather than erroring inside the boot path.
+    local BUFF_RENAMES  = Addon.BuffAliases or {}
+    local BUFF_UPGRADES = Addon.BuffSpellUpgrades or {}
     for _, profile in pairs(db.profiles or {}) do
         for _, item in ipairs(profile.items or {}) do
             -- BT-1: track whether THIS pass rewrote the aura name, because the icon
@@ -226,6 +226,28 @@ function Addon:Init()
             -- an icon learned under "Mageblood" was kept forever under
             -- "Mana Regeneration", and survived a profile export/import.
             local renamed = false
+
+            -- AMBIGUOUS-AURA UPGRADE, before the plain renames. A catalog key whose
+            -- real aura name is SHARED by more than one source cannot be migrated
+            -- with a plain alias: rewriting "Nightfin Soup" to the bare name
+            -- "Mana Regeneration" would make the entry satisfied by a Mageblood
+            -- Potion. It is upgraded to the precise spell ID instead — the same
+            -- shape the 2.0.0 Mageblood upgrade below uses.
+            if not item.spellID and not item.weaponSlot then
+                local legacy = (item.buffNames and item.buffNames[1]) or item.buffName
+                local up = legacy and BUFF_UPGRADES[legacy]
+                if up then
+                    -- Only adopt the canned display name when the player has not
+                    -- given the entry one of their own; a custom label is theirs.
+                    local dn = item.displayName
+                    if dn == nil or dn == "" or dn == legacy then item.displayName = up.displayName end
+                    item.spellID   = up.spellID
+                    item.buffName  = nil
+                    item.buffNames = { up.aura }
+                    renamed = true
+                end
+            end
+
             if item.buffName and BUFF_RENAMES[item.buffName] then
                 item.buffName = BUFF_RENAMES[item.buffName]
                 renamed = true
@@ -374,12 +396,70 @@ function Addon:GetBuffNames(item)
     return {}
 end
 
+-- ── SPELL-ID-FIRST AURA MATCHING ────────────────────────────────────────────────
+--
+-- A tracked entry stores an aura NAME, and a name is the weakest identity the game
+-- offers: it is localized (a German client's flask is not called "Distilled
+-- Wisdom"), and it drifts (three catalog keys in this addon's history turned out
+-- never to have matched anything). A spell ID is none of those things.
+--
+-- So the rule, the same one Daseeki-Nexus's world-buff matcher settled on and for
+-- the same reasons: try the catalog's spell ID FIRST, fall back to the name. Not
+-- ID-only — ID-only would be a downgrade here, because the IDs in the catalog are
+-- max-rank and a rank-5 Arcane Intellect carries a different one. The name catches
+-- exactly that case, and entries with no ID at all are unaffected.
+--
+-- The one deliberate exception is Addon.BuffSpellDB (Mageblood vs Nightfin, both
+-- "Mana Regeneration"): those are ID-ONLY, enforced in Addon:GetItemExpiry.
+
+-- True when this spell ID names an aura whose NAME is shared by more than one
+-- source, and therefore cannot stand in for the ID.
+function Addon:IsAmbiguousAuraSpell(spellID)
+    if not spellID then return false end
+    for _, e in ipairs(Addon.BuffSpellDB or {}) do
+        if e.spellID == spellID then return true end
+    end
+    return false
+end
+
+-- The catalog row for a tracked aura NAME, or nil.
+--
+-- A legacy key is followed through Addon.BuffAliases on the way, which is what
+-- lets a name that never passed through Init()'s migration — an imported profile
+-- string, a hand-typed old name — still find its row.
+function Addon:GetCatalogEntry(buffName)
+    if not buffName or buffName == "" then return nil end
+    local db = Addon.BuffDB
+    if not db then return nil end
+    local e = db[buffName]
+    if e then return e end
+    local canon = Addon.BuffAliases and Addon.BuffAliases[buffName]
+    return canon and db[canon] or nil
+end
+
+-- The catalog's aura spell ID for a tracked aura NAME, or nil.
+function Addon:GetCatalogSpellID(buffName)
+    local e = Addon:GetCatalogEntry(buffName)
+    return e and e.spellID or nil
+end
+
+-- Seconds remaining for ONE tracked aura name: spell ID first, name second.
+-- nil = not present; math.huge = permanent.
+function Addon:GetNamedBuffExpiry(buffName)
+    local spellID = Addon:GetCatalogSpellID(buffName)
+    if spellID then
+        local secs = Addon:GetSpellExpiry(spellID)
+        if secs ~= nil then return secs end
+    end
+    return Addon:GetBuffExpiry(buffName)
+end
+
 -- Returns the BEST (maximum) remaining seconds across all buff names in the list.
 -- nil = none are active; math.huge = at least one is permanent.
 function Addon:GetMultiBuffExpiry(buffNames)
     local best = nil
     for _, name in ipairs(buffNames) do
-        local secs = Addon:GetBuffExpiry(name)
+        local secs = Addon:GetNamedBuffExpiry(name)
         if secs ~= nil then
             if best == nil then
                 best = secs
@@ -427,6 +507,39 @@ function Addon:GetBuffExpiry(buffName)
         end
     end
     return nil  -- not present
+end
+
+-- ── The ONE place a tracked entry's remaining time is decided. ──────────────────
+--
+-- Returns (seconds, tracked):
+--   tracked = false  the entry names nothing at all — no spell ID, no aura names.
+--                    It is not "missing", it is not being tracked, and the caller
+--                    must not draw a reminder for it. This is the case the two
+--                    frame.lua call sites used to answer with a bare `return
+--                    false` and is the reason this returns a second value at all.
+--   seconds = nil    tracked, and the aura is ABSENT -> reminder.
+--   seconds          remaining, or math.huge when the aura has no expiry.
+--
+-- Weapon-enchant entries are NOT handled here; they come from
+-- GetWeaponEnchantInfo, which is a different API with a different unknown (BT-2),
+-- and folding them in would blur two nils that mean different things.
+function Addon:GetItemExpiry(item)
+    if item.spellID then
+        local secs = Addon:GetSpellExpiry(item.spellID)
+        if secs ~= nil then return secs, true end
+        -- STRICT: an ambiguous-aura entry may not fall back to its name. "Mana
+        -- Regeneration" is exactly what cannot tell a Mageblood Potion from a bowl
+        -- of Nightfin Soup, so letting the name answer here would report the
+        -- Mageblood tracker satisfied by the soup. Stop at the ID.
+        if Addon:IsAmbiguousAuraSpell(item.spellID) then return nil, true end
+    end
+    local names = Addon:GetBuffNames(item)
+    if #names > 0 then
+        return Addon:GetMultiBuffExpiry(names), true
+    end
+    -- An entry with a spell ID but no names is still tracked, by that ID alone.
+    if item.spellID then return nil, true end
+    return nil, false
 end
 
 -- Returns the icon texture for a buff entry.
@@ -485,9 +598,11 @@ function Addon:GetBuffIcon(item)
             end
         end
     end
-    -- 2. BuffDB lookup by primary buff name — correct icon regardless of stored itemID
-    if primaryBuff and Addon.BuffDB then
-        local dbEntry = Addon.BuffDB[primaryBuff]
+    -- 2. BuffDB lookup by primary buff name — correct icon regardless of stored
+    --    itemID, and through the legacy alias so a not-yet-migrated name (an
+    --    imported profile) still draws the right icon rather than a question mark.
+    if primaryBuff then
+        local dbEntry = Addon:GetCatalogEntry(primaryBuff)
         if dbEntry then
             if dbEntry.itemID then
                 local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(dbEntry.itemID)
@@ -510,6 +625,46 @@ function Addon:GetBuffIcon(item)
         if tex then return tex end
     end
     return "Interface\\Icons\\INV_Misc_QuestionMark"
+end
+
+-- ── /dbt auras — settle a flagged catalog row in one line. ─────────────────────
+--
+-- buffs.lua flags every key whose aura name has never actually been read off a live
+-- bar (`verify = "assumed" | "suspect"`). Those rows cannot be resolved by
+-- reasoning, only by looking — so this prints exactly what UnitBuff() is returning
+-- right now: the aura's NAME, its spell ID, and whether this catalog already knows
+-- that name. Drink the consumable, run this, and the row is settled.
+--
+-- The "(catalog: ...)" column is the whole point of it. A line reading
+--   03  Distilled Wisdom  id=17627  (catalog: Flask of Distilled Wisdom)
+-- says the entry matches; a line reading
+--   03  Distilled Wisdom  id=17627  (catalog: UNKNOWN NAME)
+-- is a mismatch caught in one look, which is the defect this addon shipped for two
+-- flasks without anyone being able to see it.
+function Addon:DumpAuras()
+    print(Addon:Tag("[DaseekiBT]") .. " auras on you right now (name / spell ID / catalog):")
+    local n = 0
+    for i = 1, 40 do
+        local name, _, _, _, _, _, _, _, _, spellID = UnitBuff("player", i)
+        if not name then break end
+        n = n + 1
+        local entry = Addon:GetCatalogEntry(name)
+        local known
+        if entry then
+            known = entry.label or name
+        else
+            -- The name is unknown, but the ID may still be catalogued under a
+            -- DIFFERENT key — which is precisely the mismatch shape worth naming.
+            local byID
+            for key, data in pairs(Addon.BuffDB or {}) do
+                if spellID and data.spellID == spellID then byID = key; break end
+            end
+            known = byID and ("UNKNOWN NAME — id is keyed as \"" .. byID .. "\"") or "not in catalog"
+        end
+        print(("  %02d  %s   id=%s   (catalog: %s)")
+            :format(i, tostring(name), tostring(spellID or "?"), known))
+    end
+    if n == 0 then print("  (no buffs active)") end
 end
 
 local MAX_ACCOUNT_MACROS = 120
@@ -644,7 +799,9 @@ SlashCmdList["DASEEKIBT"] = function(msg)
         Addon.db.settings.posY     = DEFAULT_SETTINGS.posY
         Addon:PositionFrame()
         print(Addon:Tag("[DaseekiBT]") .. " Frame position reset.")
+    elseif msg == "auras" then
+        Addon:DumpAuras()
     else
-        print(Addon:Tag("[DaseekiBT]") .. " /dbt [options|toggle|lock|reset]")
+        print(Addon:Tag("[DaseekiBT]") .. " /dbt [options|toggle|lock|reset|auras]")
     end
 end
