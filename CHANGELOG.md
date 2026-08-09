@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.2 — 2026-08-08
 
 - **Fixed: Flask of Distilled Wisdom and Flask of Chromatic Resistance were never
   recognised.** You could be sitting there with 39 minutes of Distilled Wisdom on your

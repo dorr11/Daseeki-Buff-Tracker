@@ -2,7 +2,7 @@
 
 <!-- Canonical CurseForge project description. Update here first, then paste to
      https://www.curseforge.com/wow/addons/ project 1592411.
-     Last synced: 2026-08-03 (v2.1.1). -->
+     Last synced: 2026-08-08 (v2.1.2). -->
 
 Customizable buff and consumable tracker for WoW Classic Era. Shows what's missing for your class/spec and lets you click an icon to reapply it.
 
