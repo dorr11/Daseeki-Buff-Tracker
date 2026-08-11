@@ -109,6 +109,67 @@ function Addon.ComputeDropLine(childTop, rowH, count, cursorY, listScale)
     return line
 end
 
+--- THE REORDER COMMIT — CLASS 9 (synchronous in-call event dispatch) ----------
+---
+--- The other half of the drag lives here for the same reason ComputeDropLine
+--- does: it is pure, so the headless harness drives the contract without a frame
+--- stack, and the ticker in options.lua cannot disagree with what the tests pin.
+---
+--- WHY A LATCH. The commit does not end when the list is rewritten. It ends after
+--- Addon:RefreshItemList() and Addon:UpdateFrame(), and both of those are full of
+--- calls the client dispatches IN-CALL: RefreshItemList Hides and Shows every row
+--- (OnHide/OnShow run to completion inside the call) and re-arms each row's
+--- OnMouseDown — the very handler that arms a drag and shows the ticker;
+--- UpdateFrame Shows/resizes the tracker frame and writes secure attributes.
+--- CLIENT_ASYNC_LESSONS Class 9: anything armed at or after the first call of a
+--- sequence is armed too late, and the shipped ticker cleared _dragSourceIdx /
+--- _dragDropLine AFTER those two calls. A second pass through the release branch
+--- during that window would read a source index pointing into the ALREADY
+--- REORDERED list and move a second, wrong item.
+---
+--- So: the drag state is cleared and the commit latch raised BEFORE the first of
+--- those calls, released only when the sequence returns, saved/restored so nesting
+--- is safe, and read by the ticker as "this is my own echo".
+
+--- Move `items[from]` to insertion line `to` (1..#items+1, as ComputeDropLine
+--- returns). Returns the item's NEW index, or nil when nothing legitimate could
+--- be moved — a nil answer is "no move happened", never "moved to slot nil".
+function Addon.CommitReorder(items, from, to)
+    if type(items) ~= "table" then return nil end
+    from, to = tonumber(from), tonumber(to)
+    if not from or not to then return nil end
+    from, to = math.floor(from), math.floor(to)
+    local n = #items
+    if n < 1 or from < 1 or from > n then return nil end
+
+    local item = table.remove(items, from)
+    if item == nil then return nil end
+    -- Removing the source shifts every later slot down by one, so a drop line
+    -- BELOW the source has to come back by one to mean the same gap.
+    if to > from then to = to - 1 end
+    if to < 1 then to = 1 end
+    if to > #items + 1 then to = #items + 1 end
+    table.insert(items, to, item)
+    return to
+end
+
+Addon._reorderDepth = 0
+
+--- True when the caller owns the commit sequence. False means one is already in
+--- flight and this pass is that sequence's own echo — do nothing.
+function Addon:BeginReorderCommit()
+    if self._reorderDepth > 0 then return false end
+    self._reorderDepth = self._reorderDepth + 1
+    return true
+end
+
+function Addon:EndReorderCommit()
+    self._reorderDepth = self._reorderDepth - 1
+    if self._reorderDepth < 0 then self._reorderDepth = 0 end
+end
+
+function Addon:InReorderCommit() return self._reorderDepth > 0 end
+
 local DEFAULT_SETTINGS = {
     locked         = false,
     scale          = 1.0,

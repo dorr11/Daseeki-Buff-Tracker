@@ -183,6 +183,9 @@ local function BuildBuffList(flow)
     local dragTick = CreateFrame("Frame"); dragTick:Hide()
     bt._dragTick = dragTick
     dragTick:SetScript("OnUpdate", function()
+        -- CLASS 9: a commit's own redraw can wake this ticker from inside the
+        -- commit. Read the latch first and treat what we see as our own echo.
+        if Addon:InReorderCommit() then return end
         if not bt._dragSourceIdx then dragTick:Hide(); return end
         local cx, cy = GetCursorPosition()
 
@@ -197,21 +200,34 @@ local function BuildBuffList(flow)
 
         if not IsMouseButtonDown("LeftButton") then
             dragTick:Hide(); dropBar:Hide()
-            if bt._dragging and bt._dragDropLine then
-                local profileName = bt.selectedProfileName
-                local prof = profileName and Addon.db.profiles[profileName]
-                if prof and prof.items then
-                    local item = tremove(prof.items, bt._dragSourceIdx)
-                    local insertAt = bt._dragDropLine
-                    if insertAt > bt._dragSourceIdx then insertAt = insertAt - 1 end
-                    insertAt = math.max(1, math.min(#prof.items + 1, insertAt))
-                    tinsert(prof.items, insertAt, item)
-                    bt.selectedItemIndex = insertAt
+
+            -- CLASS 9 (see Addon.CommitReorder in main.lua). The gesture's own
+            -- state is READ into locals and CLEARED here — before the first call
+            -- that dispatches anything — because RefreshItemList/UpdateFrame below
+            -- Hide and Show rows and the tracker frame, and those handlers run to
+            -- completion inside this call. Anything they wake finds the drag over.
+            local from    = bt._dragSourceIdx
+            local dropped = bt._dragging and bt._dragDropLine or nil
+            bt._dragging, bt._dragSourceIdx, bt._dragDropLine = false, nil, nil
+
+            -- ...and the commit latch is raised before the same first call, so a
+            -- pass woken from inside the redraw reads it, recognises its own echo
+            -- and refuses rather than committing a second move.
+            if dropped and Addon:BeginReorderCommit() then
+                -- pcall-fenced: an error inside a redraw must not leave the latch
+                -- up and wedge every later reorder for the session.
+                pcall(function()
+                    local profileName = bt.selectedProfileName
+                    local prof = profileName and Addon.db.profiles[profileName]
+                    if not (prof and prof.items) then return end
+                    local landed = Addon.CommitReorder(prof.items, from, dropped)
+                    if not landed then return end
+                    bt.selectedItemIndex = landed
                     Addon:RefreshItemList()
                     Addon:UpdateFrame()
-                end
+                end)
+                Addon:EndReorderCommit()
             end
-            bt._dragging, bt._dragSourceIdx, bt._dragDropLine = false, nil, nil
             return
         end
 
@@ -747,6 +763,10 @@ function Addon:RefreshItemList()
         end)
         row:SetScript("OnMouseDown", function(self, btn2)
             if btn2 ~= "LeftButton" then return end
+            -- CLASS 9: RefreshItemList (which installs this very handler) Shows
+            -- and Hides rows in-call. A mouse-down dispatched out of a commit's
+            -- own redraw must not arm a fresh drag against the list being rewritten.
+            if Addon:InReorderCommit() then return end
             bt._dragSourceIdx = ci; bt._dragging = false
             -- UIPARENT SPACE, deliberately, and the ticker's threshold reads it
             -- back in the SAME space (see BuildBuffList). This anchor only ever
