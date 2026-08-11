@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.3 — 2026-08-11
 
 - Fixed: **dragging a tracked buff to a new position could move a second one with it.**
   Dropping a buff rewrote the list and then redrew it, and the redraw hides, re-shows and
