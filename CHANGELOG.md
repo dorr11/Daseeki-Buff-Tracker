@@ -1,6 +1,14 @@
 # Changelog
 
-## 2.1.2 — 2026-08-08
+## Unreleased
+
+- Fixed: **dragging a tracked buff to a new position could move a second one with it.**
+  Dropping a buff rewrote the list and then redrew it, and the redraw hides, re-shows and
+  re-arms every row — work the game runs immediately, before the drop has finished. The
+  drag was only marked "over" after all of that, so anything the redraw woke could see a
+  drag still in progress, pointing at a row number that no longer meant what it did a
+  moment earlier, and shuffle a second item. The drop is now marked finished before the
+  redraw begins, and the redraw cannot start another one. One drag moves exactly one buff.
 
 - **Fixed: Flask of Distilled Wisdom and Flask of Chromatic Resistance were never
   recognised.** You could be sitting there with 39 minutes of Distilled Wisdom on your

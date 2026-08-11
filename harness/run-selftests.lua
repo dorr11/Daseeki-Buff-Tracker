@@ -1095,6 +1095,197 @@ end
 V_AURA = gateEnd("AURA")
 
 ----------------------------------------------------------------------
+-- GATE C9: synchronous in-call dispatch (CLIENT_ASYNC_LESSONS Class 9)
+--
+-- SIM POSTURE. Buff Tracker performs NO client mutation. Its whole vocabulary is
+-- reads — UnitBuff, GetWeaponEnchantInfo, GetItemInfo, GetMacroInfo,
+-- C_Container.GetContainerNumSlots / GetContainerItemInfo — and every action it
+-- offers is delegated to the client by writing SecureActionButtonTemplate
+-- attributes, so the client executes the use and this addon is nowhere in that
+-- call stack. There is therefore NO mutation sim to give a synchronous-dispatch
+-- posture to, and none has been invented for the sake of the mandate.
+--
+-- What Buff Tracker DOES own is in-call dispatch of its own making. The reorder
+-- commit's redraw (Addon:RefreshItemList + Addon:UpdateFrame) Hides and Shows
+-- every list row and the tracker frame, re-arms each row's OnMouseDown, and
+-- writes secure attributes — all handlers the client runs to completion inside
+-- those calls. The shipped ticker cleared its drag state AFTER that redraw, which
+-- is Class 9's "armed too late" exactly: a second pass through the release branch
+-- during the window read a source index pointing into the already-reordered list.
+--
+-- The commit is driven here through the real pure seam (Addon.CommitReorder) and
+-- the real latch, with the shipped clear-after ordering kept as a RED CONTROL.
+----------------------------------------------------------------------
+gateBegin("GATE C9: reorder commit under in-call redraw dispatch")
+
+local V_C9
+do
+    ck(type(Addon.CommitReorder) == "function",
+       "(a) Addon.CommitReorder published as a pure seam")
+    ck(type(Addon.BeginReorderCommit) == "function"
+       and type(Addon.EndReorderCommit) == "function"
+       and type(Addon.InReorderCommit) == "function",
+       "(a) the commit latch is published alongside it")
+
+    -- ---- (b) the pure surgery itself -------------------------------------
+    local function names(t)
+        local out = {}
+        for i, v in ipairs(t) do out[i] = v.n end
+        return table.concat(out, ",")
+    end
+    local function list() return { {n="a"}, {n="b"}, {n="c"}, {n="d"} } end
+
+    local L = list()
+    ck(Addon.CommitReorder(L, 1, 3) == 2 and names(L) == "b,a,c,d",
+       "(b) moving down closes the gap the removal opened (" .. names(L) .. ")")
+    L = list()
+    ck(Addon.CommitReorder(L, 4, 1) == 1 and names(L) == "d,a,b,c",
+       "(b) moving to the head lands at 1 (" .. names(L) .. ")")
+    L = list()
+    ck(Addon.CommitReorder(L, 2, 5) == 4 and names(L) == "a,c,d,b",
+       "(b) the count+1 line means 'after the last row' (" .. names(L) .. ")")
+    L = list()
+    ck(Addon.CommitReorder(L, 2, 2) == 2 and names(L) == "a,b,c,d",
+       "(b) dropping on itself is a no-op, not a duplication")
+    ck(Addon.CommitReorder(nil, 1, 2) == nil, "(b) a nil list moves nothing")
+    ck(Addon.CommitReorder({}, 1, 1) == nil, "(b) an empty list moves nothing")
+    ck(Addon.CommitReorder(list(), 9, 1) == nil, "(b) an out-of-range source moves nothing")
+    ck(Addon.CommitReorder(list(), 1, nil) == nil, "(b) a nil drop line moves nothing")
+
+    -- ---- (c) RED CONTROL: the shipped clear-after ordering ----------------
+    -- The release branch as it shipped: commit, redraw, THEN clear. The redraw is
+    -- modelled by a Show/Hide fan-out that wakes the ticker once, which is exactly
+    -- what RefreshItemList's row:Show()/row:Hide() and UpdateFrame's f:Show() do.
+    do
+        local items = list()
+        local drag = { src = 1, line = 3, dragging = true }
+        local passes = 0
+
+        local release
+        local function redrawShipped()      -- the in-call dispatch
+            if drag.src and drag.dragging and drag.line then release() end
+        end
+        release = function()
+            passes = passes + 1
+            if passes > 4 then return end   -- stand-in for the stack the client runs out of
+            if drag.dragging and drag.line then
+                local item = table.remove(items, drag.src)
+                local at = drag.line
+                if at > drag.src then at = at - 1 end
+                at = math.max(1, math.min(#items + 1, at))
+                table.insert(items, at, item)
+                redrawShipped()                          -- <- state still armed here
+            end
+            drag.dragging, drag.src, drag.line = false, nil, nil   -- cleared too late
+        end
+        release()
+        ck(passes > 1, ("(c) the shipped ordering re-entered its own commit (%d passes)")
+           :format(passes))
+        ck(names(items) ~= "b,a,c,d",
+           "(c) ...and the list did not land where one drop should have put it ("
+           .. names(items) .. ")")
+    end
+
+    -- ---- (d) the real ordering: clear + latch BEFORE the redraw -----------
+    do
+        local items = list()
+        local drag = { src = 1, line = 3, dragging = true }
+        local commits, woken = 0, 0
+
+        local release
+        local function redraw()             -- same in-call dispatch, same wake
+            woken = woken + 1
+            release()                       -- a row Show/OnMouseDown re-entering
+        end
+        release = function()
+            -- The ticker's own guard, verbatim in shape.
+            if Addon:InReorderCommit() then return end
+            local from    = drag.src
+            local dropped = drag.dragging and drag.line or nil
+            drag.dragging, drag.src, drag.line = false, nil, nil
+            if dropped and Addon:BeginReorderCommit() then
+                pcall(function()
+                    local landed = Addon.CommitReorder(items, from, dropped)
+                    if not landed then return end
+                    commits = commits + 1
+                    redraw()
+                end)
+                Addon:EndReorderCommit()
+            end
+        end
+        release()
+
+        ck(woken >= 1, "(d) the redraw really did wake the ticker from inside the commit")
+        ck(commits == 1, ("(d) exactly ONE commit landed (%d)"):format(commits))
+        ck(names(items) == "b,a,c,d",
+           "(d) the list moved once, to where the drop asked (" .. names(items) .. ")")
+        ck(Addon:InReorderCommit() == false, "(d) the latch is down when the sequence returns")
+    end
+
+    -- ---- (e) the latch survives an error inside the redraw ----------------
+    do
+        ck(Addon:BeginReorderCommit() == true, "(e) a fresh sequence can be owned")
+        pcall(function() error("a redraw blew up") end)
+        Addon:EndReorderCommit()
+        ck(Addon:InReorderCommit() == false, "(e) an error does not wedge the latch up")
+        ck(Addon:BeginReorderCommit() == true, "(e) ...and the next reorder still works")
+        Addon:EndReorderCommit()
+    end
+
+    -- ---- (f) options.lua actually uses it, in the right order -------------
+    local op = readFile(P("options.lua")) or ""
+    ck(#op > 0, "(f) options.lua is readable")
+    local rel = op:match('if not IsMouseButtonDown%("LeftButton"%) then(.-)\n            return\n        end') or ""
+    ck(rel ~= "", "(f) the release branch is locatable")
+    local clearAt  = rel:find("bt._dragging, bt._dragSourceIdx, bt._dragDropLine = false, nil, nil", 1, true)
+    local latchAt  = rel:find("Addon:BeginReorderCommit()", 1, true)
+    local refreshAt= rel:find("Addon:RefreshItemList()", 1, true)
+    local frameAt  = rel:find("Addon:UpdateFrame()", 1, true)
+    ck(clearAt and latchAt and refreshAt and frameAt,
+       "(f) clear / latch / RefreshItemList / UpdateFrame are all present")
+    ck(clearAt and refreshAt and clearAt < refreshAt,
+       "(f) the drag state is cleared BEFORE the redraw that dispatches in-call")
+    ck(latchAt and refreshAt and latchAt < refreshAt,
+       "(f) the commit latch is raised BEFORE it too")
+    ck(rel:find("Addon:EndReorderCommit()", 1, true) ~= nil, "(f) and released on the way out")
+    ck(rel:find("pcall(", 1, true) ~= nil, "(f) the commit body is pcall-fenced")
+    ck(rel:find("tremove(prof.items", 1, true) == nil,
+       "(f) REGRESSION PIN: the release branch no longer re-implements the surgery")
+    ck(op:find("if Addon:InReorderCommit() then return end", 1, true) ~= nil,
+       "(f) the ticker reads the latch and treats what it sees as its own echo")
+    local md = op:match('row:SetScript%("OnMouseDown", function%(self, btn2%)(.-)end%)') or ""
+    ck(md:find("Addon:InReorderCommit()", 1, true) ~= nil,
+       "(f) a row mouse-down woken by the redraw cannot arm a fresh drag")
+
+    -- ---- (g) no client mutation exists to need a mutation sim -------------
+    -- Asserted rather than assumed: if a mutating verb ever lands in this addon,
+    -- this gate turns red and the sim decision above has to be revisited.
+    do
+        local MUTATORS = {
+            "UseItem", "UseContainerItem", "UseAction", "PickupContainerItem",
+            "PickupItem", "SplitContainerItem", "EquipItemByName", "CastSpell",
+            "CastSpellByName", "RunMacro", "SendChatMessage", "SendAddonMessage",
+            "SetCVar", "BuyMerchantItem", "PutItemInBackpack", "DeleteMacro",
+            "CreateMacro", "EditMacro",
+        }
+        local found = {}
+        for _, f in ipairs({ "main.lua", "frame.lua", "options.lua", "buffs.lua",
+                             "profiles.lua", "defaults.lua" }) do
+            local src = readFile(P(f)) or ""
+            for _, verb in ipairs(MUTATORS) do
+                if src:find(verb .. "%s*%(") then found[#found + 1] = f .. ":" .. verb end
+            end
+        end
+        ck(#found == 0, "(g) no client-mutating call anywhere in the addon ("
+           .. (next(found) and table.concat(found, ", ") or "none") .. ")")
+        local fr = readFile(P("frame.lua")) or ""
+        ck(fr:find("SecureActionButtonTemplate", 1, true) ~= nil,
+           "(g) actions are delegated to the client's own secure handler, as recorded")
+    end
+end
+V_C9 = gateEnd("C9")
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Buff-Tracker migration self-tests")
 realprint("#   GATE 0        toc parse          : " .. V_TOC)
@@ -1106,6 +1297,7 @@ realprint("#   GATE DRAG     reorder hit-test   : " .. V_DRAG)
 realprint("#   GATE ICON     stamped icon cache : " .. V_ICON)
 realprint("#   GATE ENCH     unreadable ≠ forever: " .. V_ENCH)
 realprint("#   GATE AURA     aura-name catalog  : " .. V_AURA)
+realprint("#   GATE C9       in-call dispatch   : " .. V_C9)
 realprint("#")
 realprint("#   RESULT: " .. (FAILS == 0 and "ALL PASS" or (FAILS .. " FAILURE(S) — RED")))
 realprint("############################################################")
